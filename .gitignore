@@ -1,0 +1,4 @@
+uploads/*
+.cursor/skills
+bin/goclaw
+goclaw.db

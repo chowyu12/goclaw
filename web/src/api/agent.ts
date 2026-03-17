@@ -1,0 +1,59 @@
+import request, { type ListQuery } from './request'
+
+export interface MemOSConfig {
+  base_url?: string
+  api_key?: string
+  user_id?: string
+  top_k?: number
+  async?: boolean
+}
+
+export interface Agent {
+  id: number
+  uuid: string
+  name: string
+  description: string
+  system_prompt: string
+  provider_id: number
+  model_name: string
+  temperature: number
+  max_tokens: number
+  timeout: number
+  max_history: number
+  max_iterations: number
+  tool_search_enabled: boolean
+  memos_enabled: boolean
+  memos_config: MemOSConfig
+  token: string
+  tools?: any[]
+  skills?: any[]
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateAgentReq {
+  name: string
+  description?: string
+  system_prompt?: string
+  provider_id: number
+  model_name: string
+  temperature?: number
+  max_tokens?: number
+  timeout?: number
+  max_history?: number
+  max_iterations?: number
+  tool_search_enabled?: boolean
+  memos_enabled?: boolean
+  memos_config?: MemOSConfig
+  tool_ids?: number[]
+  skill_ids?: number[]
+}
+
+export const agentApi = {
+  list: (params: ListQuery) => request.get('/agents', { params }),
+  get: (id: number) => request.get(`/agents/${id}`),
+  create: (data: CreateAgentReq) => request.post('/agents', data),
+  update: (id: number, data: Partial<CreateAgentReq>) => request.put(`/agents/${id}`, data),
+  delete: (id: number) => request.delete(`/agents/${id}`),
+  resetToken: (id: number) => request.post(`/agents/${id}/reset-token`),
+}

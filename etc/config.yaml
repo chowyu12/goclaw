@@ -1,0 +1,18 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+database:
+  driver: sqlite
+  dsn: goclaw.db
+log:
+  level: info
+jwt:
+  # secret 留空时启动自动生成随机密钥
+  secret: ""
+  expire_hours: 24
+upload:
+  dir: ./uploads
+  max_size: 20971520
+browser:
+  visible: true
+  cdp_endpoint: http://127.0.0.1:9222

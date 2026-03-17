@@ -1,0 +1,482 @@
+openapi: 3.0.3
+info:
+  title: GoClaw API
+  description: GoClaw AI Agent 对话 API，支持流式/非流式对话、文件上传及会话管理。
+  version: 1.0.0
+
+servers:
+  - url: /api/v1
+    description: API base path
+
+tags:
+  - name: Chat
+    description: 对话与会话
+
+security:
+  - BearerAuth: []
+
+paths:
+  /chat/completions:
+    post:
+      tags: [Chat]
+      summary: 非流式对话
+      description: 使用 Agent Token 认证，无需传 agent_id。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: 对话响应
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/ChatResponse"
+
+  /chat/stream:
+    post:
+      tags: [Chat]
+      summary: SSE 流式对话
+      description: |
+        使用 Server-Sent Events 返回流式响应。支持 JWT Token 和 Agent Token 两种认证方式。
+
+        **事件类型**：
+        - `event: message` + `data: StreamChunk` — 流式内容和执行步骤
+        - `event: error` + `data: {"error": "..."}` — 错误
+        - `data: [DONE]` — 流结束
+
+        **StreamChunk 字段说明**：
+        - `conversation_id`：首个 chunk 返回会话 ID
+        - `delta`：增量文本
+        - `step` / `steps`：执行步骤（tool_call / llm_call / skill_match）
+        - `done: true`：本轮对话完成
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: SSE 流
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/StreamChunk"
+
+  /conversations:
+    get:
+      tags: [Chat]
+      summary: 会话列表
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Keyword"
+        - name: agent_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: 按 Agent ID 筛选
+        - name: user_id
+          in: query
+          schema:
+            type: string
+          description: 按用户 ID 筛选
+      responses:
+        "200":
+          description: 分页会话列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - properties:
+                      data:
+                        $ref: "#/components/schemas/ConversationPageData"
+
+  /conversations/{id}:
+    delete:
+      tags: [Chat]
+      summary: 删除会话
+      description: 同时删除关联的消息和执行步骤
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          $ref: "#/components/responses/OK"
+
+  /conversations/{id}/messages:
+    get:
+      tags: [Chat]
+      summary: 获取会话消息列表
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+          description: 返回消息数量上限
+        - name: with_steps
+          in: query
+          schema:
+            type: string
+            enum: ["true"]
+          description: 是否包含 assistant 消息的执行步骤
+      responses:
+        "200":
+          description: 消息列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Message"
+
+  /conversations/{id}/steps:
+    get:
+      tags: [Chat]
+      summary: 获取会话所有执行步骤
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: 执行步骤列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ExecutionStep"
+
+  /messages/{id}/steps:
+    get:
+      tags: [Chat]
+      summary: 获取单条消息的执行步骤
+      parameters:
+        - $ref: "#/components/parameters/PathID"
+      responses:
+        "200":
+          description: 执行步骤列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Response"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ExecutionStep"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "支持 JWT Token（通过 /auth/login 获取）和 Agent Token（ag- 前缀，仅可访问 chat 接口）"
+
+  parameters:
+    PathID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        default: 20
+    Keyword:
+      name: keyword
+      in: query
+      schema:
+        type: string
+
+  responses:
+    OK:
+      description: 操作成功
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Response"
+
+  schemas:
+    Response:
+      type: object
+      properties:
+        code:
+          type: integer
+          description: "0=成功, -1=失败"
+          example: 0
+        message:
+          type: string
+          example: ok
+        data:
+          description: 响应数据
+
+    ChatFile:
+      type: object
+      required: [type, transfer_method]
+      properties:
+        type:
+          type: string
+          enum: [document, image, audio, video, custom]
+          description: 文件类型
+        transfer_method:
+          type: string
+          enum: [remote_url, local_file]
+          description: 传递方式
+        url:
+          type: string
+          description: 文件地址（transfer_method=remote_url 时）
+        upload_file_id:
+          type: string
+          description: 上传文件 ID（transfer_method=local_file 时）
+
+    ChatRequest:
+      type: object
+      required: [message]
+      properties:
+        agent_id:
+          type: string
+          description: Agent UUID（使用 Agent Token 时可省略）
+        conversation_id:
+          type: string
+          description: 会话 UUID（留空则创建新会话）
+        user_id:
+          type: string
+          description: 用户标识
+        message:
+          type: string
+          description: 用户消息
+        stream:
+          type: boolean
+          default: false
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatFile"
+          description: 附带的文件列表
+
+    ChatResponse:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+        message:
+          type: string
+        tokens_used:
+          type: integer
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExecutionStep"
+
+    StreamChunk:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+        delta:
+          type: string
+          description: 增量文本
+        done:
+          type: boolean
+        step:
+          $ref: "#/components/schemas/ExecutionStep"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExecutionStep"
+
+    Conversation:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        uuid:
+          type: string
+        agent_id:
+          type: integer
+          format: int64
+        user_id:
+          type: string
+        title:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ConversationPageData:
+      type: object
+      properties:
+        list:
+          type: array
+          items:
+            $ref: "#/components/schemas/Conversation"
+        total:
+          type: integer
+          format: int64
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        conversation_id:
+          type: integer
+          format: int64
+        role:
+          type: string
+          enum: [user, assistant, system, tool]
+        content:
+          type: string
+        tool_calls:
+          type: object
+          description: Function calling 信息
+        tool_call_id:
+          type: string
+        name:
+          type: string
+          description: 工具名称（role=tool 时）
+        tokens_used:
+          type: integer
+        parent_step_id:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExecutionStep"
+          description: 关联的执行步骤（需 with_steps=true）
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileInfo"
+          description: 关联的文件附件
+
+    ExecutionStep:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        message_id:
+          type: integer
+          format: int64
+        conversation_id:
+          type: integer
+          format: int64
+        step_order:
+          type: integer
+        step_type:
+          type: string
+          enum: [llm_call, tool_call, skill_match]
+        name:
+          type: string
+        input:
+          type: string
+        output:
+          type: string
+        status:
+          type: string
+          enum: [success, error, pending]
+        error:
+          type: string
+        duration_ms:
+          type: integer
+        tokens_used:
+          type: integer
+        metadata:
+          $ref: "#/components/schemas/StepMetadata"
+        created_at:
+          type: string
+          format: date-time
+
+    StepMetadata:
+      type: object
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        temperature:
+          type: number
+          format: double
+        tool_name:
+          type: string
+        skill_name:
+          type: string
+        skill_tools:
+          type: array
+          items:
+            type: string
+        agent_uuid:
+          type: string
+        agent_name:
+          type: string
+
+    FileInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        uuid:
+          type: string
+        conversation_id:
+          type: integer
+          format: int64
+        message_id:
+          type: integer
+          format: int64
+        filename:
+          type: string
+        content_type:
+          type: string
+        file_size:
+          type: integer
+          format: int64
+        file_type:
+          type: string
+          enum: [text, image, document]
+        text_content:
+          type: string
+          description: 提取的文本内容（非图片文件）
+        created_at:
+          type: string
+          format: date-time

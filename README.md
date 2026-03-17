@@ -1,0 +1,328 @@
+# GoClaw
+
+基于 Go + Vue 3 构建的 AI Agent 管理与执行平台，支持多模型供应商接入、工具调用、技能编排和多轮对话。
+
+![管理后台](portal.png)
+
+## 核心优势
+
+### 灵活的 Agent 自定义
+
+每个 Agent 是一个独立的智能体，可自由组合模型、工具、技能和 MCP 服务。通过 Web UI 配置系统提示词、模型参数、关联资源，无需编码即可构建面向不同场景的专属 Agent。支持 Agent Token 直接对外提供 API 服务，方便后端系统集成。
+
+### 二阶段技能加载（Two-Phase Skill Loading）
+
+借鉴 Cursor 的技能加载策略，采用**摘要注入 + 按需读取**的两阶段模式：
+
+- **阶段一**：仅将技能名称、描述和 `SKILL.md` 文件路径注入 System Prompt，不加载完整指令内容
+- **阶段二**：LLM 判断需要使用某项技能时，主动调用 `read_file` 工具读取 `SKILL.md` 获取详细指令
+
+相比一次性注入所有技能内容，此方案在 Agent 挂载大量技能时可显著降低 System Prompt 长度，减少每次请求的基础 Token 消耗，同时保持技能的完整可用性。
+
+### Tool Search — 工具按需发现
+
+当 Agent 挂载大量工具时，传统方式会将所有工具的 Function 定义（名称 + 描述 + 参数 Schema）一次性发送给 LLM，随着工具数量增长，Token 开销急剧膨胀且工具选择准确率下降。
+
+Tool Search 模式将全量加载改为**懒加载**：
+
+1. **初始请求**只携带一个轻量的 `tool_search` 工具定义
+2. LLM 根据任务需要调用 `tool_search("关键词")` 搜索可用工具
+3. 应用端在本地工具注册表中进行关键词匹配，返回 Top 5 匹配结果
+4. 匹配到的工具**完整定义自动注入下一轮请求**，LLM 即可直接调用
+5. 已发现的工具会持续保留，支持多次搜索逐步发现更多工具
+
+在工具较多（>15 个）的场景下，可减少 **85%+ 的工具定义 Token 消耗**，同时提升工具选择准确率。可在 Agent 配置页面一键开启。
+
+> 参考：[OpenAI / Anthropic Tool Search 机制](https://platform.openai.com/docs/guides/function-calling)
+
+---
+
+## 功能特性
+
+### Agent 管理
+
+- Agent 增删改查，支持设置名称、UUID、系统提示词、模型参数（温度、最大 token 等）
+- 每个 Agent 可关联多个工具（Tools）、技能（Skills）和 MCP 服务
+- 支持工具优先执行策略，Agent 自动判断是否需要调用工具（Function Calling）
+
+### 模型供应商
+
+- 支持多种 LLM Provider：OpenAI、Qwen（通义千问）、Kimi、OpenRouter、NewAPI
+- 可配置 Base URL、API Key、可用模型列表
+- 创建 Agent 时自动拉取供应商模型列表，支持搜索过滤
+
+### 工具系统
+
+- 内置工具：获取当前时间、UUID 生成、计算器、Base64 编解码、JSON 格式化、文本哈希、随机数生成、脚本执行、代码解释器
+- HTTP 工具：天气查询、IP 查询、URL 内容读取
+- 浏览器自动化：33 种操作（导航、截图、快照、点击、输入、Cookie/Storage 管理、Console/Network 监控、设备仿真等）
+- 代码解释器：支持 Python/JavaScript/Shell，沙箱执行，适用于数据处理、数学计算、文件生成、格式转换等
+- 支持自定义 HTTP 工具和脚本工具
+- MCP 协议客户端，支持接入 MCP 远程工具服务
+- 工具执行过程全链路追踪
+
+### 技能系统
+
+- 采用 OpenClaw 标准格式，每个技能是一个独立目录（`SKILL.md` + `manifest.json` + 可执行代码）
+- 三种来源：ClawHub 市场安装、本地目录扫描同步、Web UI 自定义创建
+- 技能可在 `manifest.json` 中声明工具定义（parameters），Agent 执行时自动注册为可调用工具
+- 支持可执行技能（`index.js` / `index.py`），通过子进程运行工具逻辑
+- 纯指令技能将 `SKILL.md` 内容注入 System Prompt，引导 LLM 按指令推理
+- 预置 7 个内置技能（定时任务、翻译助手、代码审查、文章摘要、写作助手、数据分析、SQL 助手），启动时自动生成到 `~/.goclaw/skills/`
+- 支持从 [ClawHub](https://clawhub.com) 一键安装技能（输入技能名称如 `himalaya` 即可下载）
+- 支持本地目录同步，手动放置技能目录后点击"同步"即可导入
+
+**技能目录结构：**
+
+```
+~/.goclaw/skills/
+  brave-web-search/
+    SKILL.md          # 技能指令（注入 System Prompt）
+    manifest.json     # 元数据、工具定义、配置、权限
+    index.js          # 可选：可执行工具逻辑
+    README.md         # 可选：文档
+```
+
+**manifest.json 示例：**
+
+```json
+{
+  "name": "brave-web-search",
+  "version": "1.0.0",
+  "description": "Search the web using Brave Search API",
+  "author": "niceperson",
+  "main": "index.js",
+  "tools": [
+    {
+      "name": "web_search",
+      "description": "Search the web",
+      "parameters": {
+        "type": "object",
+        "properties": { "query": { "type": "string" } },
+        "required": ["query"]
+      }
+    }
+  ]
+}
+```
+
+### 对话与记忆
+
+- 支持多轮对话，自动维护上下文
+- 对话历史持久化存储（MySQL / PostgreSQL / SQLite）
+- 支持流式（SSE）和阻塞式两种响应模式
+- 流式响应实时展示执行步骤
+
+### 执行日志
+
+- 完整记录每次 Agent 调用的执行链路
+- 详细记录每个步骤：LLM 调用、工具调用、技能匹配
+- 包含输入输出、耗时、Token 用量、错误信息等
+
+### 用户系统
+
+- 超管（admin）和访客（guest）两种角色
+- JWT 认证，支持 Token 自动续期
+- 首次访问引导创建超级管理员
+- 访客只读，无法进行新增、编辑、删除操作
+- 超管可管理用户（创建、禁用、删除、修改角色）
+
+### 管理后台
+
+- 现代化 Web UI（Vue 3 + Element Plus）
+- Dashboard 概览
+- 供应商、Agent、工具、技能、用户的 CRUD 管理
+- 对话测试 Playground
+- 执行日志查看器
+- 前端编译后嵌入 Go 二进制，单文件部署
+
+## 技术栈
+
+| 层级    | 技术                                               |
+| ------- | -------------------------------------------------- |
+| 后端    | Go 1.25、net/http、logrus                          |
+| AI 编排 | Function Calling（openai-go SDK）                  |
+| ORM     | GORM（MySQL / PostgreSQL / SQLite）                |
+| 认证    | JWT（golang-jwt/v5）、bcrypt                       |
+| 前端    | Vue 3、TypeScript、Element Plus、Pinia、Vue Router |
+| 构建    | Go embed、Vite                                     |
+
+## 快速开始
+
+### 前置要求
+
+- Go 1.25+
+- Node.js 18+
+- 数据库（任选其一）：MySQL 8.0+ / PostgreSQL 14+ / SQLite 3
+
+### 1. 克隆项目
+
+```bash
+git clone https://github.com/chowyu12/goclaw.git
+cd goclaw
+```
+
+### 2. 配置数据库
+
+编辑 `etc/config.yaml`，选择一种数据库：
+
+**MySQL**（推荐生产环境）：
+
+```yaml
+database:
+  driver: mysql
+  dsn: "YOUR_USER:YOUR_PASSWORD@tcp(127.0.0.1:3306)/goclaw?charset=utf8mb4&parseTime=True&loc=Local"
+```
+
+**PostgreSQL**：
+
+```yaml
+database:
+  driver: postgres
+  dsn: "host=127.0.0.1 user=YOUR_USER password=YOUR_PASSWORD dbname=goclaw port=5432 sslmode=disable"
+```
+
+**SQLite**（零配置，适合开发/单机部署）：
+
+```yaml
+database:
+  driver: sqlite
+  dsn: "goclaw.db"
+```
+
+> 启动时 GORM 会自动创建/迁移表结构，无需手动执行 SQL。
+
+### 3. 修改其他配置
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+log:
+  level: info
+
+jwt:
+  # 留空则每次启动自动生成随机密钥，生产环境建议配置固定值
+  secret: ""
+  expire_hours: 24
+```
+
+### 4. 安装依赖并启动
+
+```bash
+# 安装 Go 依赖
+go mod tidy
+
+# 安装前端依赖
+cd web && npm install && cd ..
+
+# 构建前端 + 启动服务
+make dev
+```
+
+浏览器访问 `http://localhost:8080`，首次打开会引导创建超级管理员账号。
+
+### 5. 配置模型供应商
+
+登录后进入「模型供应商」页面，添加至少一个 LLM Provider（如 OpenAI），填入 API Key 和 Base URL。
+
+### 6. 创建 Agent 开始对话
+
+进入「Agent 管理」创建 Agent，选择模型、配置工具和技能，然后在「对话测试」中体验。
+
+## 常用命令
+
+```bash
+make build            # 编译后端二进制（含嵌入前端）
+make dev              # 开发模式启动（自动构建前端）
+make test             # 运行所有测试
+make build-frontend   # 单独构建前端
+make dev-frontend     # 前端开发模式（热更新，需单独启动后端）
+make clean            # 清理构建产物
+make deps             # 整理 Go 依赖
+```
+
+### Agent Token（后端调用）
+
+每个 Agent 创建时会自动生成一个 `ag-` 前缀的 API Token，后端服务可以直接用这个 Token 调用 chat 接口，无需 JWT 登录。Token 可在 Agent 编辑页面查看、复制和重置。
+
+**阻塞式调用**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/chat/completions \
+  -H "Authorization: Bearer ag-xxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "今天天气怎么样？", "user_id": "backend-service"}'
+```
+
+使用 Agent Token 时无需传 `agent_id`，系统会自动匹配。
+
+**流式调用（SSE）**
+
+```bash
+curl -N -X POST http://localhost:8080/api/v1/chat/stream \
+  -H "Authorization: Bearer ag-xxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "帮我写一个排序算法", "user_id": "backend-service"}'
+```
+
+**带会话上下文的多轮对话**
+
+```bash
+# 第一轮，返回的 conversation_id 用于后续对话
+curl -X POST http://localhost:8080/api/v1/chat/completions \
+  -H "Authorization: Bearer ag-xxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "什么是微服务？", "user_id": "backend-service"}'
+
+# 第二轮，传入上一轮返回的 conversation_id
+curl -X POST http://localhost:8080/api/v1/chat/completions \
+  -H "Authorization: Bearer ag-xxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "它和单体架构有什么区别？", "conversation_id": "上一轮返回的ID", "user_id": "backend-service"}'
+```
+
+**带文件的对话**
+
+```bash
+# 先上传文件，获取 upload_file_id
+curl -X POST http://localhost:8080/api/v1/files/upload \
+  -H "Authorization: Bearer ag-xxxxxxxxxxxxxxxxxxxxx" \
+  -F "file=@document.pdf"
+
+# 在对话中引用文件
+curl -X POST http://localhost:8080/api/v1/chat/completions \
+  -H "Authorization: Bearer ag-xxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "帮我总结这个文档",
+    "user_id": "backend-service",
+    "files": [
+      {"type": "document", "transfer_method": "local_file", "upload_file_id": "文件UUID"}
+    ]
+  }'
+
+# 也支持直接传文件 URL
+curl -X POST http://localhost:8080/api/v1/chat/completions \
+  -H "Authorization: Bearer ag-xxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "分析这张图片",
+    "user_id": "backend-service",
+    "files": [
+      {"type": "image", "transfer_method": "remote_url", "url": "https://example.com/image.png"}
+    ]
+  }'
+```
+
+> Agent Token 仅可访问 `/api/v1/chat/` 下的接口，不能访问管理类接口。
+
+## 部署
+
+项目支持单文件部署，构建后的二进制文件已包含前端静态资源：
+
+```bash
+make all
+./bin/goclaw
+```
