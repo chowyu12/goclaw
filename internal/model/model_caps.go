@@ -15,8 +15,6 @@ type modelCapRule struct {
 
 var modelCapRules = []modelCapRule{
 	{Prefix: "gpt-5.", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
-	{Prefix: "gpt-5.4", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
-	{Prefix: "gpt-5.2", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
 	{"o1-", ModelCaps{NoTemperature: true, NoTopP: true}},
 	{"o3-", ModelCaps{NoTemperature: true, NoTopP: true}},
 	{"o4-mini", ModelCaps{NoTemperature: true, NoTopP: true}},
