@@ -9,7 +9,9 @@ const (
 	ProviderQwen       ProviderType = "qwen"
 	ProviderKimi       ProviderType = "kimi"
 	ProviderOpenRouter ProviderType = "openrouter"
-	ProviderNewAPI     ProviderType = "newapi"
+	ProviderOpenAICompat ProviderType = "openai-compatible"
+	ProviderClaude     ProviderType = "claude"
+	ProviderGemini     ProviderType = "gemini"
 )
 
 type Provider struct {

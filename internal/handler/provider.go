@@ -204,7 +204,24 @@ func defaultModelsByType(providerType model.ProviderType) []string {
 			"deepseek/deepseek-chat-v3-0324", "deepseek/deepseek-r1",
 			"meta-llama/llama-3.3-70b-instruct",
 		}
-	case model.ProviderNewAPI:
+	case model.ProviderClaude:
+		return []string{
+			"claude-sonnet-4-20250514",
+			"claude-3-7-sonnet-20250219",
+			"claude-3-5-haiku-20241022",
+			"claude-3-5-sonnet-20241022",
+			"claude-3-opus-20240229",
+		}
+	case model.ProviderGemini:
+		return []string{
+			"gemini-2.5-pro-preview-06-05",
+			"gemini-2.5-flash-preview-05-20",
+			"gemini-2.0-flash",
+			"gemini-2.0-flash-lite",
+			"gemini-1.5-pro",
+			"gemini-1.5-flash",
+		}
+	case model.ProviderOpenAICompat:
 		return []string{}
 	default:
 		return []string{}

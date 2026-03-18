@@ -23,7 +23,9 @@ var DefaultBaseURLs = map[model.ProviderType]string{
 	model.ProviderQwen:       "https://dashscope.aliyuncs.com/compatible-mode/v1",
 	model.ProviderKimi:       "https://api.moonshot.cn/v1",
 	model.ProviderOpenRouter: "https://openrouter.ai/api/v1",
-	model.ProviderNewAPI:     "",
+	model.ProviderOpenAICompat: "",
+	model.ProviderClaude:     "https://api.anthropic.com",
+	model.ProviderGemini:     "https://generativelanguage.googleapis.com",
 }
 
 type adapter struct {
@@ -62,6 +64,13 @@ func FetchRemoteModels(ctx context.Context, p *model.Provider) ([]string, error)
 	baseURL, err := ResolveBaseURL(p)
 	if err != nil {
 		return nil, err
+	}
+
+	switch p.Type {
+	case model.ProviderClaude:
+		return fetchClaudeModels(ctx, p.APIKey, baseURL)
+	case model.ProviderGemini:
+		return fetchGeminiModels(ctx, p.APIKey, baseURL)
 	}
 
 	modelsURL := baseURL + "/models"
@@ -106,6 +115,13 @@ func NewFromProvider(p *model.Provider, modelName string) (LLMProvider, error) {
 	baseURL, err := ResolveBaseURL(p)
 	if err != nil {
 		return nil, err
+	}
+
+	switch p.Type {
+	case model.ProviderClaude:
+		return newClaudeAdapter(p.APIKey, baseURL), nil
+	case model.ProviderGemini:
+		return newGeminiAdapter(p.APIKey, baseURL), nil
 	}
 
 	config := openai.DefaultConfig(p.APIKey)
