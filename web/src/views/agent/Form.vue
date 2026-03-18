@@ -147,7 +147,7 @@
                 :max="50"
                 style="width: 100%"
               />
-              <div class="form-hint">工具调用轮次上限，默认 10</div>
+              <div class="form-hint">工具调用轮次上限，默认 30</div>
             </el-form-item>
           </el-col>
         </el-row>
@@ -403,8 +403,8 @@ const form = ref<any>({
   temperature: 0.7,
   max_tokens: 2048,
   timeout: 0,
-  max_history: 50,
-  max_iterations: 10,
+  max_history: 15,
+  max_iterations: 30,
   tool_search_enabled: false,
   memos_enabled: false,
   memos_config: {
@@ -501,8 +501,8 @@ async function loadAgent() {
     const detail = res.data;
     form.value = {
       ...detail,
-      max_history: detail.max_history || 50,
-      max_iterations: detail.max_iterations || 10,
+      max_history: detail.max_history || 15,
+      max_iterations: detail.max_iterations || 30,
       tool_search_enabled: detail.tool_search_enabled || false,
       memos_enabled: detail.memos_enabled || false,
       memos_config: {
