@@ -112,7 +112,7 @@ func Handler(ctx context.Context, args string) (string, error) {
 		timeout = min(p.Timeout, maxTimeout)
 	}
 
-	sandboxDir := workspace.Sandbox()
+	sandboxDir := workspace.AgentSandboxFromCtx(ctx)
 	if sandboxDir == "" {
 		return marshalResult(codeResult{OK: false, Error: "workspace not initialized"}), nil
 	}

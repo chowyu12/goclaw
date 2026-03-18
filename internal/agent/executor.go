@@ -107,6 +107,8 @@ func (e *Executor) Execute(ctx context.Context, req model.ChatRequest) (*Execute
 	}
 	defer ec.closeMCP()
 
+	ctx = workspace.WithAgentUUID(ctx, ec.ag.UUID)
+
 	ec.l.WithField("user", req.UserID).Info("[Execute] >> start")
 	if body, err := json.Marshal(req); err == nil {
 		ec.l.WithField("body", string(body)).Debug("[Execute]    request body")
@@ -121,6 +123,8 @@ func (e *Executor) ExecuteStream(ctx context.Context, req model.ChatRequest, chu
 		return err
 	}
 	defer ec.closeMCP()
+
+	ctx = workspace.WithAgentUUID(ctx, ec.ag.UUID)
 
 	ec.l.WithField("user", req.UserID).Info("[Execute] >> start (stream)")
 

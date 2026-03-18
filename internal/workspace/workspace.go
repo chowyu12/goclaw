@@ -1,12 +1,26 @@
 package workspace
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
 var root string
+
+type ctxKey struct{}
+
+func WithAgentUUID(ctx context.Context, uuid string) context.Context {
+	return context.WithValue(ctx, ctxKey{}, uuid)
+}
+
+func AgentUUIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
 
 func Init(dir string) error {
 	if dir == "" {
@@ -26,6 +40,7 @@ func Init(dir string) error {
 		"cron/logs",
 		"tmp",
 		"sandbox",
+		"agents",
 	} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return fmt.Errorf("create workspace dir %q: %w", sub, err)
@@ -90,4 +105,55 @@ func Sandbox() string {
 		return ""
 	}
 	return filepath.Join(root, "sandbox")
+}
+
+func Agents() string {
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, "agents")
+}
+
+// AgentDir 返回指定 agent 的工作目录，并自动创建所需子目录。
+func AgentDir(uuid string) string {
+	if root == "" || uuid == "" {
+		return ""
+	}
+	dir := filepath.Join(root, "agents", uuid)
+	for _, sub := range []string{"", "sandbox", "tmp"} {
+		_ = os.MkdirAll(filepath.Join(dir, sub), 0o755)
+	}
+	return dir
+}
+
+func AgentSandbox(uuid string) string {
+	d := AgentDir(uuid)
+	if d == "" {
+		return Sandbox()
+	}
+	return filepath.Join(d, "sandbox")
+}
+
+func AgentTmp(uuid string) string {
+	d := AgentDir(uuid)
+	if d == "" {
+		return Tmp()
+	}
+	return filepath.Join(d, "tmp")
+}
+
+// AgentSandboxFromCtx 从 context 中提取 agent UUID 并返回对应 sandbox 目录。
+func AgentSandboxFromCtx(ctx context.Context) string {
+	if uuid := AgentUUIDFromContext(ctx); uuid != "" {
+		return AgentSandbox(uuid)
+	}
+	return Sandbox()
+}
+
+// AgentTmpFromCtx 从 context 中提取 agent UUID 并返回对应 tmp 目录。
+func AgentTmpFromCtx(ctx context.Context) string {
+	if uuid := AgentUUIDFromContext(ctx); uuid != "" {
+		return AgentTmp(uuid)
+	}
+	return Tmp()
 }

@@ -72,7 +72,7 @@ func (e *Executor) loadRemoteFile(ctx context.Context, rawURL string, chatFileTy
 	if ext == "" && strings.HasPrefix(ct, "image/") {
 		ext = "." + strings.TrimPrefix(strings.SplitN(ct, ";", 2)[0], "image/")
 	}
-	tmpDir := workspace.Tmp()
+	tmpDir := workspace.AgentTmpFromCtx(ctx)
 	if tmpDir == "" {
 		tmpDir = os.TempDir()
 	}
