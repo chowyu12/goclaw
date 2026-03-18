@@ -3,7 +3,8 @@ server:
   port: 8080
 database:
   driver: sqlite
-  dsn: goclaw.db
+  # dsn 留空时 sqlite 默认使用 ~/.goclaw/goclaw.db
+  dsn: ""
 log:
   level: info
 jwt:

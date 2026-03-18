@@ -119,6 +119,11 @@ func setDefaults(cfg *Config) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
+	if cfg.Database.Driver == "sqlite" && cfg.Database.DSN == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cfg.Database.DSN = filepath.Join(home, ".goclaw", "goclaw.db")
+		}
+	}
 	if cfg.Database.MaxOpenConns == 0 {
 		cfg.Database.MaxOpenConns = 25
 	}
