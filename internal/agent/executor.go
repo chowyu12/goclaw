@@ -163,7 +163,7 @@ func (e *Executor) prepare(ctx context.Context, req model.ChatRequest) (*execCon
 		return nil, fmt.Errorf("create llm provider: %w", err)
 	}
 
-	agentTools, toolSkillMap, err := e.collectTools(ctx, ag.ID)
+	agentTools, toolSkillMap, err := e.collectTools(ctx, ag)
 	if err != nil {
 		l.WithError(err).Error("[Execute] collect tools failed")
 		return nil, err
@@ -306,15 +306,36 @@ func (e *Executor) buildSkillManifestTools(skills []model.Skill, tracker *StepTr
 	return result
 }
 
-func (e *Executor) collectTools(ctx context.Context, agentID int64) ([]model.Tool, map[string]string, error) {
-	agentTools, err := e.store.GetAgentTools(ctx, agentID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("get agent tools: %w", err)
+func (e *Executor) collectTools(ctx context.Context, ag *model.Agent) ([]model.Tool, map[string]string, error) {
+	var agentTools []model.Tool
+	seen := make(map[int64]bool)
+
+	if ag.ToolSearchEnabled {
+		items, _, err := e.store.ListTools(ctx, model.ListQuery{Page: 1, PageSize: 10000})
+		if err != nil {
+			return nil, nil, fmt.Errorf("list all tools: %w", err)
+		}
+		for _, t := range items {
+			if t.Enabled {
+				agentTools = append(agentTools, *t)
+				seen[t.ID] = true
+			}
+		}
+		log.WithField("count", len(agentTools)).Info("[Execute]    tool_search: loaded all enabled tools")
+	} else {
+		tools, err := e.store.GetAgentTools(ctx, ag.ID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("get agent tools: %w", err)
+		}
+		agentTools = tools
+		for _, t := range tools {
+			seen[t.ID] = true
+		}
 	}
 
 	toolSkillMap := make(map[string]string)
 
-	skills, err := e.store.GetAgentSkills(ctx, agentID)
+	skills, err := e.store.GetAgentSkills(ctx, ag.ID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get agent skills: %w", err)
 	}
@@ -331,7 +352,12 @@ func (e *Executor) collectTools(ctx context.Context, agentID int64) ([]model.Too
 			}
 			log.WithFields(log.Fields{"skill": sk.Name, "tools": names}).Debug("[Execute]    skill contributed tools")
 		}
-		agentTools = append(agentTools, skillTools...)
+		for _, t := range skillTools {
+			if !seen[t.ID] {
+				agentTools = append(agentTools, t)
+				seen[t.ID] = true
+			}
+		}
 	}
 	return agentTools, toolSkillMap, nil
 }

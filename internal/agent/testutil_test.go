@@ -186,7 +186,13 @@ func (s *mockStore) GetTool(_ context.Context, id int64) (*model.Tool, error) {
 	return nil, fmt.Errorf("tool %d not found", id)
 }
 func (s *mockStore) ListTools(_ context.Context, _ model.ListQuery) ([]*model.Tool, int64, error) {
-	return nil, 0, nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var list []*model.Tool
+	for _, t := range s.toolItems {
+		list = append(list, t)
+	}
+	return list, int64(len(list)), nil
 }
 func (s *mockStore) UpdateTool(_ context.Context, _ int64, _ model.UpdateToolReq) error { return nil }
 func (s *mockStore) DeleteTool(_ context.Context, _ int64) error                        { return nil }

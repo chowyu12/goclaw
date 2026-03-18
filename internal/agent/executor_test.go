@@ -637,42 +637,113 @@ func TestExecuteStream_WithTools(t *testing.T) {
 }
 
 func TestCollectTools(t *testing.T) {
-	s := newMockStore()
-	agent, _ := seedAgent(t, s)
-	ctx := t.Context()
+	t.Run("normal", func(t *testing.T) {
+		s := newMockStore()
+		agent, _ := seedAgent(t, s)
+		ctx := t.Context()
 
-	directTool := seedToolForAgent(t, s, agent.ID, "direct_tool", "direct")
+		directTool := seedToolForAgent(t, s, agent.ID, "direct_tool", "direct")
 
-	sk := &model.Skill{Name: "testskill"}
-	s.CreateSkill(ctx, sk)
-	s.SetAgentSkills(ctx, agent.ID, []int64{sk.ID})
+		sk := &model.Skill{Name: "testskill"}
+		s.CreateSkill(ctx, sk)
+		s.SetAgentSkills(ctx, agent.ID, []int64{sk.ID})
 
-	skillTool := &model.Tool{Name: "skill_tool", Description: "from skill", HandlerType: model.HandlerBuiltin, Enabled: true}
-	s.CreateTool(ctx, skillTool)
-	s.SetSkillTools(ctx, sk.ID, []int64{skillTool.ID})
+		skillTool := &model.Tool{Name: "skill_tool", Description: "from skill", HandlerType: model.HandlerBuiltin, Enabled: true}
+		s.CreateTool(ctx, skillTool)
+		s.SetSkillTools(ctx, sk.ID, []int64{skillTool.ID})
 
-	exec := newTestExecutor(s, NewToolRegistry(), &mockLLMProvider{})
-	tools, toolSkillMap, err := exec.collectTools(ctx, agent.ID)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(tools))
-	}
-	if toolSkillMap["skill_tool"] != sk.Name {
-		t.Errorf("expected skill_tool mapped to %q, got %q", sk.Name, toolSkillMap["skill_tool"])
-	}
+		exec := newTestExecutor(s, NewToolRegistry(), &mockLLMProvider{})
+		tools, toolSkillMap, err := exec.collectTools(ctx, agent)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(tools) != 2 {
+			t.Fatalf("expected 2 tools, got %d", len(tools))
+		}
+		if toolSkillMap["skill_tool"] != sk.Name {
+			t.Errorf("expected skill_tool mapped to %q, got %q", sk.Name, toolSkillMap["skill_tool"])
+		}
 
-	names := make(map[string]bool)
-	for _, tool := range tools {
-		names[tool.Name] = true
-	}
-	if !names[directTool.Name] {
-		t.Errorf("missing direct tool %q", directTool.Name)
-	}
-	if !names["skill_tool"] {
-		t.Error("missing skill_tool")
-	}
+		names := make(map[string]bool)
+		for _, tool := range tools {
+			names[tool.Name] = true
+		}
+		if !names[directTool.Name] {
+			t.Errorf("missing direct tool %q", directTool.Name)
+		}
+		if !names["skill_tool"] {
+			t.Error("missing skill_tool")
+		}
+	})
+
+	t.Run("tool_search_loads_all", func(t *testing.T) {
+		s := newMockStore()
+		agent, _ := seedAgent(t, s)
+		agent.ToolSearchEnabled = true
+		ctx := t.Context()
+
+		seedToolForAgent(t, s, agent.ID, "agent_tool", "bound to agent")
+
+		unbound := &model.Tool{Name: "unbound_tool", Description: "not bound to agent", HandlerType: model.HandlerBuiltin, Enabled: true}
+		s.CreateTool(ctx, unbound)
+
+		disabled := &model.Tool{Name: "disabled_tool", Description: "disabled", HandlerType: model.HandlerBuiltin, Enabled: false}
+		s.CreateTool(ctx, disabled)
+
+		exec := newTestExecutor(s, NewToolRegistry(), &mockLLMProvider{})
+		tools, _, err := exec.collectTools(ctx, agent)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		names := make(map[string]bool)
+		for _, tool := range tools {
+			names[tool.Name] = true
+		}
+		if !names["agent_tool"] {
+			t.Error("missing agent_tool")
+		}
+		if !names["unbound_tool"] {
+			t.Error("missing unbound_tool — tool_search should load all enabled tools")
+		}
+		if names["disabled_tool"] {
+			t.Error("disabled_tool should be excluded")
+		}
+	})
+
+	t.Run("tool_search_dedup_skill_tools", func(t *testing.T) {
+		s := newMockStore()
+		agent, _ := seedAgent(t, s)
+		agent.ToolSearchEnabled = true
+		ctx := t.Context()
+
+		sk := &model.Skill{Name: "myskill"}
+		s.CreateSkill(ctx, sk)
+		s.SetAgentSkills(ctx, agent.ID, []int64{sk.ID})
+
+		skillTool := &model.Tool{Name: "shared_tool", Description: "in skill and global", HandlerType: model.HandlerBuiltin, Enabled: true}
+		s.CreateTool(ctx, skillTool)
+		s.SetSkillTools(ctx, sk.ID, []int64{skillTool.ID})
+
+		exec := newTestExecutor(s, NewToolRegistry(), &mockLLMProvider{})
+		tools, toolSkillMap, err := exec.collectTools(ctx, agent)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		count := 0
+		for _, tool := range tools {
+			if tool.Name == "shared_tool" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("expected shared_tool once (dedup), got %d", count)
+		}
+		if toolSkillMap["shared_tool"] != "myskill" {
+			t.Errorf("expected shared_tool mapped to myskill, got %q", toolSkillMap["shared_tool"])
+		}
+	})
 }
 
 func TestBuildMessages(t *testing.T) {

@@ -59,7 +59,9 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if len(req.ToolIDs) > 0 {
+	if req.ToolSearchEnabled {
+		h.store.SetAgentTools(ctx, a.ID, nil)
+	} else if len(req.ToolIDs) > 0 {
 		h.store.SetAgentTools(ctx, a.ID, req.ToolIDs)
 	}
 	if len(req.SkillIDs) > 0 {
@@ -115,7 +117,9 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		httputil.InternalError(w, err.Error())
 		return
 	}
-	if req.ToolIDs != nil {
+	if req.ToolSearchEnabled != nil && *req.ToolSearchEnabled {
+		h.store.SetAgentTools(ctx, id, nil)
+	} else if req.ToolIDs != nil {
 		h.store.SetAgentTools(ctx, id, req.ToolIDs)
 	}
 	if req.SkillIDs != nil {

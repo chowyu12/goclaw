@@ -252,17 +252,16 @@
         <el-divider content-position="left">高级功能</el-divider>
 
         <el-form-item label="Tool Search">
-          <el-switch v-model="form.tool_search_enabled" />
+          <el-switch v-model="form.tool_search_enabled" @change="onToolSearchChange" />
           <div class="form-hint">
-            启用后，Agent
-            不会一次性加载所有工具定义，而是通过搜索按需发现。适用于工具数量较多（>15）的场景，可显著减少
-            Token 消耗并提升工具选择准确率。
+            启用后，Agent 自动加载系统中全部已启用工具，并通过搜索按需发现，无需手动关联。
+            可显著减少 Token 消耗并提升工具选择准确率。
           </div>
         </el-form-item>
 
         <el-divider content-position="left">关联配置</el-divider>
 
-        <el-form-item label="关联工具">
+        <el-form-item v-if="!form.tool_search_enabled" label="关联工具">
           <el-select
             v-model="form.tool_ids"
             multiple
@@ -405,7 +404,7 @@ const form = ref<any>({
   timeout: 0,
   max_history: 15,
   max_iterations: 30,
-  tool_search_enabled: false,
+  tool_search_enabled: true,
   memos_enabled: false,
   memos_config: {
     base_url: "",
@@ -559,6 +558,12 @@ async function handleResetToken() {
     ElMessage.success("Token 已重置");
   } catch {
     ElMessage.error("重置 Token 失败");
+  }
+}
+
+function onToolSearchChange(enabled: boolean) {
+  if (enabled) {
+    form.value.tool_ids = [];
   }
 }
 
