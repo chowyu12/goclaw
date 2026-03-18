@@ -102,8 +102,16 @@
             :max="2"
             :step="0.1"
             show-input
+            :disabled="isTemperatureDisabled"
             style="padding-right: 16px"
           />
+          <div
+            v-if="isTemperatureDisabled"
+            class="form-hint"
+            style="color: #e6a23c"
+          >
+            该模型不支持自定义温度，已使用模型默认值
+          </div>
         </el-form-item>
         <el-row :gutter="24">
           <el-col :span="12">
@@ -252,9 +260,13 @@
         <el-divider content-position="left">高级功能</el-divider>
 
         <el-form-item label="Tool Search">
-          <el-switch v-model="form.tool_search_enabled" @change="onToolSearchChange" />
+          <el-switch
+            v-model="form.tool_search_enabled"
+            @change="onToolSearchChange"
+          />
           <div class="form-hint">
-            启用后，Agent 自动加载系统中全部已启用工具，并通过搜索按需发现，无需手动关联。
+            启用后，Agent
+            自动加载系统中全部已启用工具，并通过搜索按需发现，无需手动关联。
             可显著减少 Token 消耗并提升工具选择准确率。
           </div>
         </el-form-item>
@@ -432,6 +444,28 @@ const modelLoading = ref(false);
 const localOnlyModels = computed(() => {
   const remoteSet = new Set(remoteModels.value);
   return providerModels.value.filter((m) => !remoteSet.has(m));
+});
+
+const noTemperaturePrefixes = [
+  "o1-",
+  "o3-",
+  "o4-mini",
+  "gpt-5.",
+  "deepseek-reasoner",
+];
+const noTemperatureExact = new Set([
+  "o1",
+  "o3",
+  "o4-mini",
+  "gpt-5.4",
+  "gpt-5.2",
+]);
+
+const isTemperatureDisabled = computed(() => {
+  const m = form.value.model_name;
+  if (!m) return false;
+  if (noTemperatureExact.has(m)) return true;
+  return noTemperaturePrefixes.some((p) => m.startsWith(p));
 });
 
 function goBack() {
