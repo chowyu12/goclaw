@@ -10,6 +10,7 @@ import (
 	"github.com/chowyu12/goclaw/internal/tool/crontab"
 	"github.com/chowyu12/goclaw/internal/tool/result"
 	"github.com/chowyu12/goclaw/internal/tool/urlreader"
+	"github.com/chowyu12/goclaw/internal/tool/writefile"
 )
 
 type FileResult = result.FileResult
@@ -23,5 +24,6 @@ func DefaultBuiltins() map[string]func(context.Context, string) (string, error) 
 	m["cron_parser"] = cronTool.Handler
 	m["crontab"] = crontab.Handler
 	m["code_interpreter"] = codeinterp.Handler
+	m["write_file"] = writefile.Handler
 	return m
 }

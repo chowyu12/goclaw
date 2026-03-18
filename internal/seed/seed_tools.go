@@ -422,6 +422,34 @@ func defaultTools() []model.Tool {
 			}),
 		},
 		{
+			Name:        "write_file",
+			Description: "将文本内容写入指定文件。支持绝对路径、~ 开头的路径和相对路径（相对于 Agent 沙箱目录）。可选追加模式。自动创建父目录。",
+			HandlerType: model.HandlerBuiltin,
+			Enabled:     true,
+			FunctionDef: mustJSON(map[string]any{
+				"name":        "write_file",
+				"description": "Write text content to a file. Supports absolute paths, ~/... paths, and relative paths (resolved to agent sandbox). Creates parent directories automatically.",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": "File path to write. Absolute (/tmp/out.txt), home-relative (~/Desktop/out.txt), or relative (output.txt → sandbox dir)",
+						},
+						"content": map[string]any{
+							"type":        "string",
+							"description": "The text content to write to the file",
+						},
+						"append": map[string]any{
+							"type":        "boolean",
+							"description": "If true, append to existing file instead of overwriting. Default: false",
+						},
+					},
+					"required": []string{"path", "content"},
+				},
+			}),
+		},
+		{
 			Name: "code_interpreter",
 			Description: "代码解释器，支持编写并执行 Python/JavaScript/Shell 代码。" +
 				"Agent 传入语言类型和代码，工具自动在沙箱目录中创建文件并执行，返回 stdout/stderr 结果。" +
