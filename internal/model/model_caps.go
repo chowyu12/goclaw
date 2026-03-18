@@ -15,9 +15,13 @@ type modelCapRule struct {
 
 var modelCapRules = []modelCapRule{
 	{Prefix: "gpt-5.", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
+	{Prefix: "openai/gpt-5.", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
 	{"o1-", ModelCaps{NoTemperature: true, NoTopP: true}},
-	{"o3-", ModelCaps{NoTemperature: true, NoTopP: true}},
-	{"o4-mini", ModelCaps{NoTemperature: true, NoTopP: true}},
+	{Prefix: "openai/o1-", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
+	{Prefix: "o3-", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
+	{Prefix: "openai/o3-", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
+	{Prefix: "o4-mini", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
+	{Prefix: "openai/o4-mini", Caps: ModelCaps{NoTemperature: true, NoTopP: true}},
 	{"deepseek-reasoner", ModelCaps{NoTemperature: true, NoTopP: true}},
 }
 
