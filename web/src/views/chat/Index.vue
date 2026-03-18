@@ -289,13 +289,21 @@
             />
           </div>
           <button
+            v-if="streaming"
+            class="stop-btn"
+            @click="stopGeneration"
+            title="停止生成"
+          >
+            <span class="stop-square"></span>
+          </button>
+          <button
+            v-else
             class="send-btn"
-            :class="{ ready: selectedAgentUUID && inputMessage.trim() && !streaming }"
-            :disabled="!selectedAgentUUID || !inputMessage.trim() || streaming"
+            :class="{ ready: selectedAgentUUID && inputMessage.trim() }"
+            :disabled="!selectedAgentUUID || !inputMessage.trim()"
             @click="sendMessage"
           >
-            <el-icon v-if="streaming" class="is-loading"><Loading /></el-icon>
-            <el-icon v-else><Promotion /></el-icon>
+            <el-icon><Promotion /></el-icon>
           </button>
         </div>
       </div>
@@ -303,10 +311,34 @@
   </div>
 </template>
 
+<script lang="ts">
+import { ref } from 'vue'
+import type { ExecutionStep, FileInfo } from '../../api/chat'
+
+interface ChatMessage {
+  role: string
+  content: string
+  tokens_used?: number
+  steps?: ExecutionStep[]
+  files?: FileInfo[]
+  _showSteps?: boolean
+}
+
+// Module-level state — survives component unmount / remount on page navigation
+const _messages = ref<ChatMessage[]>([])
+const _streaming = ref(false)
+const _streamingContent = ref('')
+const _pendingSteps = ref<ExecutionStep[]>([])
+const _conversationId = ref('')
+const _selectedAgentUUID = ref('')
+const _activeConvId = ref<number>(0)
+let _streamController: AbortController | null = null
+</script>
+
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, reactive } from 'vue'
+import { computed, onMounted, nextTick, reactive } from 'vue'
 import { agentApi, type Agent } from '../../api/agent'
-import { chatApi, streamChat, fileApi, type StreamChunk, type ExecutionStep, type FileInfo, type ChatFile, type Conversation, type Message } from '../../api/chat'
+import { chatApi, streamChat, fileApi, type StreamChunk, type ChatFile, type Conversation, type Message } from '../../api/chat'
 import { useAuthStore } from '../../stores/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -319,31 +351,23 @@ interface UploadedFile {
   file_size: number
 }
 
-interface ChatMessage {
-  role: string
-  content: string
-  tokens_used?: number
-  steps?: ExecutionStep[]
-  files?: FileInfo[]
-  _showSteps?: boolean
-}
+const messages = _messages
+const streaming = _streaming
+const streamingContent = _streamingContent
+const pendingSteps = _pendingSteps
+const conversationId = _conversationId
+const selectedAgentUUID = _selectedAgentUUID
+const activeConvId = _activeConvId
 
 const agents = ref<Agent[]>([])
-const selectedAgentUUID = ref('')
-const conversationId = ref('')
-const messages = ref<ChatMessage[]>([])
 const inputMessage = ref('')
-const streaming = ref(false)
-const streamingContent = ref('')
 const messagesArea = ref<HTMLElement>()
-const pendingSteps = ref<ExecutionStep[]>([])
 const pendingFiles = ref<UploadedFile[]>([])
 const pendingURLs = ref<string[]>([])
 const urlInput = ref('')
 const showURLInput = ref(false)
 const uploading = ref(false)
 const conversations = ref<Conversation[]>([])
-const activeConvId = ref<number>(0)
 const loadingHistory = ref(false)
 const copiedMsgIdx = ref(-1)
 
@@ -357,14 +381,22 @@ const currentAgent = computed(() => agents.value.find(a => a.uuid === selectedAg
 onMounted(async () => {
   const res: any = await agentApi.list({ page: 1, page_size: 100 })
   agents.value = res.data?.list || []
+
+  if (selectedAgentUUID.value) {
+    loadConversations()
+    scrollToBottom()
+    return
+  }
+
   const first = agents.value[0]
-  if (first && !selectedAgentUUID.value) {
+  if (first) {
     selectAgent(first.uuid)
   }
 })
 
 function selectAgent(uuid: string) {
   if (selectedAgentUUID.value === uuid) return
+  if (streaming.value) stopGeneration()
   selectedAgentUUID.value = uuid
   resetChat()
   loadConversations()
@@ -459,6 +491,36 @@ function resetChat() {
   pendingURLs.value = []
   urlInput.value = ''
   showURLInput.value = false
+  if (_streamController) {
+    _streamController.abort()
+    _streamController = null
+  }
+  streaming.value = false
+}
+
+function stopGeneration() {
+  if (_streamController) {
+    _streamController.abort()
+    _streamController = null
+  }
+  if (streaming.value) {
+    if (streamingContent.value) {
+      const steps = [...pendingSteps.value]
+      const tokensUsed = steps.reduce((sum, s) => sum + (s.tokens_used || 0), 0)
+      messages.value.push(reactive({
+        role: 'assistant',
+        content: streamingContent.value,
+        tokens_used: tokensUsed || undefined,
+        steps,
+        _showSteps: false,
+      }))
+    }
+    streamingContent.value = ''
+    pendingSteps.value = []
+    streaming.value = false
+    scrollToBottom()
+    loadConversations()
+  }
 }
 
 async function handleFileUpload(event: Event) {
@@ -549,7 +611,7 @@ function sendMessage() {
   pendingSteps.value = []
   scrollToBottom()
 
-  streamChat(
+  _streamController = streamChat(
     { agent_id: selectedAgentUUID.value, conversation_id: conversationId.value, message: text, user_id: authStore.user?.username, files: chatFiles.length > 0 ? chatFiles : undefined },
     (chunk: StreamChunk) => {
       if (chunk.conversation_id) conversationId.value = chunk.conversation_id
@@ -563,6 +625,7 @@ function sendMessage() {
         streamingContent.value = ''
         pendingSteps.value = []
         streaming.value = false
+        _streamController = null
         scrollToBottom()
         loadConversations()
       }
@@ -576,11 +639,13 @@ function sendMessage() {
         pendingSteps.value = []
       }
       streaming.value = false
+      _streamController = null
       loadConversations()
     },
     (err: string) => {
       messages.value.push(reactive({ role: 'assistant', content: `[错误] ${err}` }))
       streaming.value = false
+      _streamController = null
       scrollToBottom()
     },
   )
@@ -1302,6 +1367,28 @@ function truncateText(text: string, maxLen: number): string {
 }
 .send-btn.ready:hover {
   background: #245bdb;
+}
+.stop-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: none;
+  background: #f56c6c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+.stop-btn:hover {
+  background: #e04848;
+}
+.stop-square {
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 3px;
 }
 
 /* ===== Transitions ===== */
