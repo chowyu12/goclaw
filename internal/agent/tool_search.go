@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -31,7 +32,7 @@ func toolSearchDef() openai.Tool {
 				"properties": map[string]any{
 					"query": map[string]any{
 						"type":        "string",
-						"description": "搜索关键词，可以是工具名称、功能描述、任务目标等",
+						"description": "搜索关键词。工具名称通常为英文，建议优先使用英文关键词或工具名片段（如 shell、file、http），也支持中文功能描述搜索。",
 					},
 				},
 				"required": []string{"query"},
@@ -40,11 +41,77 @@ func toolSearchDef() openai.Tool {
 	}
 }
 
+func isCJK(r rune) bool {
+	return unicode.Is(unicode.Han, r) ||
+		unicode.Is(unicode.Hangul, r) ||
+		unicode.Is(unicode.Katakana, r) ||
+		unicode.Is(unicode.Hiragana, r)
+}
+
+// splitCJKBoundary splits s into segments at transitions between CJK and
+// non-CJK characters. For example "get天气" → ["get", "天气"].
+func splitCJKBoundary(s string) []string {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return nil
+	}
+	var segments []string
+	start := 0
+	prevCJK := isCJK(runes[0])
+	for i := 1; i < len(runes); i++ {
+		curCJK := isCJK(runes[i])
+		if curCJK != prevCJK {
+			segments = append(segments, string(runes[start:i]))
+			start = i
+			prevCJK = curCJK
+		}
+	}
+	segments = append(segments, string(runes[start:]))
+	return segments
+}
+
+// extractKeywords produces search tokens from a query string.
+// It splits on whitespace and CJK/non-CJK boundaries, and generates CJK
+// bigrams so that "执行命令" can match descriptions like "执行Shell命令".
+func extractKeywords(query string) []string {
+	query = strings.ToLower(query)
+	seen := make(map[string]bool)
+	var result []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+
+	for _, field := range strings.Fields(query) {
+		add(field)
+
+		segments := splitCJKBoundary(field)
+		if len(segments) > 1 {
+			for _, seg := range segments {
+				add(seg)
+			}
+		}
+
+		for _, seg := range segments {
+			runes := []rune(seg)
+			if len(runes) > 2 && isCJK(runes[0]) {
+				for i := range len(runes) - 1 {
+					add(string(runes[i : i+2]))
+				}
+			}
+		}
+	}
+	return result
+}
+
 // searchTools performs keyword-based scoring on all tool definitions.
 // Name matches are weighted higher than description matches.
+// CJK text is handled via bigram tokenization so that Chinese queries
+// can match descriptions containing the same characters.
 func searchTools(query string, allDefs []openai.Tool) []toolSearchResult {
-	query = strings.ToLower(query)
-	keywords := strings.Fields(query)
+	keywords := extractKeywords(query)
 	if len(keywords) == 0 {
 		return nil
 	}
