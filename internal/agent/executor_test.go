@@ -17,8 +17,11 @@ func TestBuildSystemPrompt(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		ag := &model.Agent{}
 		result := buildSystemPrompt(ag, nil, nil, nil, false)
-		if result != "" {
-			t.Errorf("expected empty, got %q", result)
+		if result == "" {
+			t.Error("expected default base prompt when system_prompt is empty")
+		}
+		if !strings.Contains(result, "GoClaw") {
+			t.Errorf("expected default GoClaw intro, got %q", result)
 		}
 	})
 

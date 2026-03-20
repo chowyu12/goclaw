@@ -14,15 +14,20 @@ import (
 const (
 	toolSearchName       = "tool_search"
 	toolSearchMaxResults = 5
+
+	// ToolSearchAutoFullThreshold 当「LLM 可见」的工具定义条数（含 MCP / 技能声明工具）不超过该值时，
+	// 即使开启 Tool Search，也自动下发全量工具定义，避免少量工具时反复 tool_search 浪费轮次。
+	ToolSearchAutoFullThreshold = 24
 )
+
+// UseLazyToolSearch 是否在 Agent 执行时进入「tool_search + 渐进发现」模式。
+func UseLazyToolSearch(agentSearchEnabled bool, toolDefCount int) bool {
+	return agentSearchEnabled && toolDefCount > ToolSearchAutoFullThreshold
+}
 
 type toolSearchResult struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-}
-
-func toolSearchDef() openai.Tool {
-	return toolSearchDefWithContext(0, 0, nil)
 }
 
 func toolSearchDefWithContext(totalTools int, discoveredCount int, discoveredNames []string) openai.Tool {

@@ -23,15 +23,17 @@
 
 当 Agent 挂载大量工具时，传统方式会将所有工具的 Function 定义（名称 + 描述 + 参数 Schema）一次性发送给 LLM，随着工具数量增长，Token 开销急剧膨胀且工具选择准确率下降。
 
-Tool Search 模式将全量加载改为**懒加载**：
+开启 **Tool Search** 后，Agent 会加载系统中全部已启用工具（含 MCP / 技能声明工具），但根据**工具条数自动选择模式**：
 
-1. **初始请求**只携带一个轻量的 `tool_search` 工具定义
-2. LLM 根据任务需要调用 `tool_search("关键词")` 搜索可用工具
-3. 应用端在本地工具注册表中进行关键词匹配，返回 Top 5 匹配结果
-4. 匹配到的工具**完整定义自动注入下一轮请求**，LLM 即可直接调用
-5. 已发现的工具会持续保留，支持多次搜索逐步发现更多工具
+- **工具条数 ≤ 24（默认阈值）**：**自动全量下发**所有工具定义，不进入懒加载，避免「只有十几个工具却反复 `tool_search`」浪费轮次（与少量内置工具场景对齐）。
+- **工具条数 > 24**：进入**懒加载**：
+  1. **初始请求**只携带轻量的 `tool_search` 与技能预加载工具
+  2. LLM 调用 `tool_search("关键词")`，本地关键词匹配返回 Top 5
+  3. 匹配工具**完整定义注入下一轮**，已发现工具会保留
 
-在工具较多（>15 个）的场景下，可减少 **85%+ 的工具定义 Token 消耗**，同时提升工具选择准确率。可在 Agent 配置页面一键开启。
+此外，执行器内置**轻量循环检测**（参考 OpenClaw `loop-detection` 思路）：连续相同参数调用、`tool_search` 短时内过多、两工具 ping-pong 交替等模式会触发拦截，向模型返回 `[loop_guard]` 提示，减少无效重复工具调用。
+
+可在 Agent 配置页面一键开启 Tool Search；阈值 `ToolSearchAutoFullThreshold` 见 `internal/agent/tool_search.go`。
 
 > 参考：[OpenAI / Anthropic Tool Search 机制](https://platform.openai.com/docs/guides/function-calling)
 
@@ -47,7 +49,7 @@ Tool Search 模式将全量加载改为**懒加载**：
 
 ### 模型供应商
 
-- 支持多种 LLM Provider：OpenAI、Qwen（通义千问）、Kimi、OpenRouter、NewAPI
+- 支持多种 LLM Provider：OpenAI、Qwen（通义千问）、Kimi、Moonshot、OpenRouter、**OpenAI 兼容接口**（如 New API / 第三方代理）、**Anthropic Claude**、**Google Gemini**
 - 可配置 Base URL、API Key、可用模型列表
 - 创建 Agent 时自动拉取供应商模型列表，支持搜索过滤
 
@@ -55,22 +57,22 @@ Tool Search 模式将全量加载改为**懒加载**：
 
 14 个内置工具，覆盖文件操作、命令执行、网页交互和任务调度：
 
-| 工具 | 说明 |
-|------|------|
-| `read` | 读取文件内容，支持按行范围读取 |
-| `write` | 创建或覆盖文件，自动创建父目录 |
-| `edit` | 精确编辑文件（查找并替换） |
-| `grep` | 按正则表达式搜索文件内容 |
-| `find` | 按 glob 模式查找文件 |
-| `ls` | 列出目录内容 |
-| `exec` | 运行 Shell 命令，支持 PTY（适配需要 TTY 的命令行工具） |
-| `process` | 管理后台命令会话（启动、列出、读取输出、终止） |
-| `web_fetch` | 抓取 URL 并提取可读内容，自动回退浏览器渲染 |
-| `browser` | 浏览器自动化：33 种操作（导航、截图、快照、交互、监控、仿真等） |
-| `canvas` | 渲染 HTML/CSS/JS 画布，执行 JS 表达式，截取快照 |
-| `cron` | 管理定时任务与唤醒事件（提醒） |
-| `code_interpreter` | 代码解释器：Python/JavaScript/Shell 沙箱执行 |
-| `current_time` | 获取当前系统时间 |
+| 工具               | 说明                                                            |
+| ------------------ | --------------------------------------------------------------- |
+| `read`             | 读取文件内容，支持按行范围读取                                  |
+| `write`            | 创建或覆盖文件，自动创建父目录                                  |
+| `edit`             | 精确编辑文件（查找并替换）                                      |
+| `grep`             | 按正则表达式搜索文件内容                                        |
+| `find`             | 按 glob 模式查找文件                                            |
+| `ls`               | 列出目录内容                                                    |
+| `exec`             | 运行 Shell 命令，支持 PTY（适配需要 TTY 的命令行工具）          |
+| `process`          | 管理后台命令会话（启动、列出、读取输出、终止）                  |
+| `web_fetch`        | 抓取 URL 并提取可读内容，自动回退浏览器渲染                     |
+| `browser`          | 浏览器自动化：33 种操作（导航、截图、快照、交互、监控、仿真等） |
+| `canvas`           | 渲染 HTML/CSS/JS 画布，执行 JS 表达式，截取快照                 |
+| `cron`             | 管理定时任务与唤醒事件（提醒）                                  |
+| `code_interpreter` | 代码解释器：Python/JavaScript/Shell 沙箱执行                    |
+| `current_time`     | 获取当前系统时间                                                |
 
 - 支持自定义 HTTP 工具和命令工具（通过 Web UI 或 API 创建）
 - MCP 协议客户端，支持接入 MCP 远程工具服务
@@ -261,6 +263,9 @@ make build-frontend   # 单独构建前端
 make dev-frontend     # 前端开发模式（热更新，需单独启动后端）
 make clean            # 清理构建产物
 make deps             # 整理 Go 依赖
+
+# 命令行单轮对话调试（需已配置数据库与 Agent）
+go run ./cmd/test_agent -config etc/config.yaml -agent <Agent-UUID> -msg "你好"
 ```
 
 ### Agent Token（后端调用）

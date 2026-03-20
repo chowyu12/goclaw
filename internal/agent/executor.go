@@ -373,73 +373,10 @@ func (e *Executor) execute(ctx context.Context, ec *execContext) (*ExecuteResult
 		defer cancel()
 	}
 
-	history, err := e.memory.LoadHistory(ctx, ec.conv.ID, ec.ag.HistoryLimit())
+	st, err := e.bootstrapAgentTurn(ctx, ec, false)
 	if err != nil {
-		ec.l.WithError(err).Error("[LLM] load history failed")
 		return nil, err
 	}
-
-	if _, err := e.memory.SaveUserMessage(ctx, ec.conv.ID, ec.userMsg, ec.files); err != nil {
-		ec.l.WithError(err).Error("[LLM] save user message failed")
-		return nil, err
-	}
-
-	var toolMap map[string]Tool
-	var toolDefs []openai.Tool
-	var allToolDefs []openai.Tool
-	calledTools := make(map[string]bool)
-	tsMode := false
-	discovered := map[string]bool{}
-
-	if ec.hasTools() {
-		lcTools := e.registry.BuildTrackedTools(ec.agentTools, ec.tracker, ec.toolSkillMap)
-		lcTools = append(lcTools, ec.mcpTools...)
-		lcTools = append(lcTools, ec.skillTools...)
-		toolMap = make(map[string]Tool, len(lcTools))
-		for _, t := range lcTools {
-			toolMap[t.Name()] = t
-		}
-		allToolDefs = buildLLMToolDefs(ec.agentTools, ec.mcpTools, ec.skillTools)
-
-		tsMode = ec.ag.ToolSearchEnabled && len(allToolDefs) > 0
-		if tsMode {
-			preloadSkillTools(ec.toolSkillMap, discovered)
-			toolDefs = buildToolSearchDefs(allToolDefs, discovered)
-			ec.l.WithFields(log.Fields{"total_tools": len(allToolDefs), "skill_preloaded": len(discovered)}).Info("[Execute]    mode = tool-search")
-		} else {
-			toolDefs = allToolDefs
-			ec.l.Info("[Execute]    mode = tool-augmented")
-		}
-	} else {
-		ec.l.Info("[Execute]    mode = simple")
-	}
-
-	memosContext := e.memory.RecallMemories(ctx, ec.userMsg, ec.ag)
-
-	var msgTools []model.Tool
-	var msgToolSkillMap map[string]string
-	if !tsMode {
-		msgTools = ec.agentTools
-		msgToolSkillMap = ec.toolSkillMap
-	}
-	messages := buildMessages(messagesBuildInput{
-		Agent:          ec.ag,
-		Skills:         ec.skills,
-		History:        history,
-		UserMsg:        ec.userMsg,
-		AgentTools:     msgTools,
-		ToolSkillMap:   msgToolSkillMap,
-		Files:          ec.files,
-		MemosContext:   memosContext,
-		ToolSearchMode: tsMode,
-	})
-	logMessages(ec.l, messages)
-
-	req := openai.ChatCompletionRequest{
-		Model: ec.ag.ModelName,
-		Tools: toolDefs,
-	}
-	applyModelCaps(&req, ec.ag, ec.l)
 
 	var finalContent string
 	var totalTokens int
@@ -447,12 +384,16 @@ func (e *Executor) execute(ctx context.Context, ec *execContext) (*ExecuteResult
 
 	maxIter := ec.ag.IterationLimit()
 	completed := false
+	loopDet := newToolLoopDetector(ec.l)
+	calledTools := make(map[string]bool)
 
 	for i := range maxIter {
-		if tsMode {
-			req.Tools = buildToolSearchDefs(allToolDefs, discovered)
+		req := openai.ChatCompletionRequest{
+			Model:    ec.ag.ModelName,
+			Messages: st.Messages,
+			Tools:    toolsSentToLLM(st.TSMode, st.AllToolDefs, st.Discovered),
 		}
-		req.Messages = messages
+		applyModelCaps(&req, ec.ag, ec.l)
 		ec.l.WithFields(log.Fields{"round": i + 1, "model": ec.ag.ModelName}).Info("[LLM] >> call")
 		iterStart := time.Now()
 		resp, err := ec.llmProv.CreateChatCompletion(ctx, req)
@@ -493,79 +434,7 @@ func (e *Executor) execute(ctx context.Context, ec *execContext) (*ExecuteResult
 		}
 		ec.l.WithFields(log.Fields{"round": i + 1, "duration": iterDur, "tool_calls": tcNames}).Info("[LLM] << tool calls requested")
 
-		messages = append(messages, choice.Message)
-
-		var toolResults []ToolResult
-		var pendingParts []openai.ChatMessagePart
-		for _, tc := range choice.Message.ToolCalls {
-			toolName := tc.Function.Name
-			toolArgs := tc.Function.Arguments
-
-			if tsMode && toolName == toolSearchName {
-				result := e.handleToolSearch(ctx, ec, tc, allToolDefs, discovered)
-				messages = append(messages, result)
-				toolResults = append(toolResults, ToolResult{
-					ToolCallID: tc.ID,
-					ToolName:   toolName,
-					Content:    result.Content,
-				})
-				continue
-			}
-
-			tool, ok := toolMap[toolName]
-			if !ok {
-				errMsg := fmt.Sprintf("tool %q not found", toolName)
-				ec.l.WithField("tool", toolName).Warn("[Tool] tool not registered, skipping")
-				messages = append(messages, openai.ChatCompletionMessage{
-					Role:       openai.ChatMessageRoleTool,
-					Content:    errMsg,
-					ToolCallID: tc.ID,
-					Name:       toolName,
-				})
-				toolResults = append(toolResults, ToolResult{
-					ToolCallID: tc.ID,
-					ToolName:   toolName,
-					Content:    errMsg,
-				})
-				continue
-			}
-
-			ec.l.WithFields(log.Fields{"tool": toolName, "args": truncateLog(toolArgs, 200)}).Info("[Tool] >> invoke")
-			calledTools[toolName] = true
-			callStart := time.Now()
-			output, callErr := tool.Call(ctx, toolArgs)
-			callDur := time.Since(callStart)
-			toolResult := output
-			if callErr != nil {
-				toolResult = fmt.Sprintf("error: %s", callErr)
-				ec.l.WithFields(log.Fields{"tool": toolName, "duration": callDur}).WithError(callErr).Error("[Tool] << failed")
-			} else {
-				ec.l.WithFields(log.Fields{"tool": toolName, "duration": callDur, "preview": truncateLog(output, 200)}).Info("[Tool] << ok")
-			}
-
-			toolMsg, fileParts := e.buildToolResponseParts(ctx, tc.ID, toolName, toolResult, callErr == nil, ec.l)
-			messages = append(messages, toolMsg)
-			toolResults = append(toolResults, ToolResult{
-				ToolCallID: tc.ID,
-				ToolName:   toolName,
-				Content:    toolMsg.Content,
-			})
-			pendingParts = append(pendingParts, fileParts...)
-		}
-
-		if err := e.memory.SaveToolCallRound(ctx, ec.conv.ID, choice.Message.Content, choice.Message.ToolCalls, toolResults); err != nil {
-			ec.l.WithError(err).Warn("[Memory] save tool call round failed")
-		}
-
-		if len(pendingParts) > 0 {
-			parts := append([]openai.ChatMessagePart{
-				{Type: openai.ChatMessagePartTypeText, Text: "工具返回了以下文件:"},
-			}, pendingParts...)
-			messages = append(messages, openai.ChatCompletionMessage{
-				Role:         openai.ChatMessageRoleUser,
-				MultiContent: parts,
-			})
-		}
+		st.Messages = e.appendAssistantToolRound(ctx, ec, st.Messages, choice.Message, st.ToolMap, st.TSMode, st.AllToolDefs, st.Discovered, loopDet, calledTools)
 	}
 
 	if !completed {
@@ -593,82 +462,24 @@ func (e *Executor) stream(ctx context.Context, ec *execContext, chunkHandler fun
 		defer cancel()
 	}
 
-	history, err := e.memory.LoadHistory(ctx, ec.conv.ID, ec.ag.HistoryLimit())
+	st, err := e.bootstrapAgentTurn(ctx, ec, true)
 	if err != nil {
-		ec.l.WithError(err).Error("[LLM] load history failed")
 		return err
 	}
-
-	if _, err := e.memory.SaveUserMessage(ctx, ec.conv.ID, ec.userMsg, ec.files); err != nil {
-		ec.l.WithError(err).Error("[LLM] save user message failed")
-		return err
-	}
-
-	var toolMap map[string]Tool
-	var toolDefs []openai.Tool
-	var allToolDefs []openai.Tool
-	calledTools := make(map[string]bool)
-	tsMode := false
-	discovered := map[string]bool{}
-
-	if ec.hasTools() {
-		lcTools := e.registry.BuildTrackedTools(ec.agentTools, ec.tracker, ec.toolSkillMap)
-		lcTools = append(lcTools, ec.mcpTools...)
-		lcTools = append(lcTools, ec.skillTools...)
-		toolMap = make(map[string]Tool, len(lcTools))
-		for _, t := range lcTools {
-			toolMap[t.Name()] = t
-		}
-		allToolDefs = buildLLMToolDefs(ec.agentTools, ec.mcpTools, ec.skillTools)
-
-		tsMode = ec.ag.ToolSearchEnabled && len(allToolDefs) > 0
-		if tsMode {
-			preloadSkillTools(ec.toolSkillMap, discovered)
-			toolDefs = buildToolSearchDefs(allToolDefs, discovered)
-			ec.l.WithFields(log.Fields{"total_tools": len(allToolDefs), "skill_preloaded": len(discovered)}).Info("[Execute]    mode = stream + tool-search")
-		} else {
-			toolDefs = allToolDefs
-			ec.l.Info("[Execute]    mode = stream + tool-augmented")
-		}
-	} else {
-		ec.l.Info("[Execute]    mode = stream")
-	}
-
-	memosContext := e.memory.RecallMemories(ctx, ec.userMsg, ec.ag)
-
-	var msgTools []model.Tool
-	var msgToolSkillMap map[string]string
-	if !tsMode {
-		msgTools = ec.agentTools
-		msgToolSkillMap = ec.toolSkillMap
-	}
-	messages := buildMessages(messagesBuildInput{
-		Agent:          ec.ag,
-		Skills:         ec.skills,
-		History:        history,
-		UserMsg:        ec.userMsg,
-		AgentTools:     msgTools,
-		ToolSkillMap:   msgToolSkillMap,
-		Files:          ec.files,
-		MemosContext:   memosContext,
-		ToolSearchMode: tsMode,
-	})
-	logMessages(ec.l, messages)
 
 	var totalTokens int
 	var finalContent string
 	totalStart := time.Now()
 	maxIter := ec.ag.IterationLimit()
 	completed := false
+	loopDet := newToolLoopDetector(ec.l)
+	calledTools := make(map[string]bool)
 
 	for i := range maxIter {
-		if tsMode {
-			toolDefs = buildToolSearchDefs(allToolDefs, discovered)
-		}
 		apiReq := openai.ChatCompletionRequest{
 			Model:    ec.ag.ModelName,
-			Messages: messages,
-			Tools:    toolDefs,
+			Messages: st.Messages,
+			Tools:    toolsSentToLLM(st.TSMode, st.AllToolDefs, st.Discovered),
 			Stream:   true,
 			StreamOptions: &openai.StreamOptions{
 				IncludeUsage: true,
@@ -771,83 +582,12 @@ func (e *Executor) stream(ctx context.Context, ec *execContext, chunkHandler fun
 		}
 		ec.l.WithFields(log.Fields{"round": i + 1, "duration": iterDur, "tokens": roundTokens, "tool_calls": tcNames}).Info("[LLM] << tool calls requested (stream)")
 
-		messages = append(messages, openai.ChatCompletionMessage{
+		asst := openai.ChatCompletionMessage{
 			Role:      openai.ChatMessageRoleAssistant,
 			Content:   content,
 			ToolCalls: toolCalls,
-		})
-
-		var toolResults []ToolResult
-		var pendingParts []openai.ChatMessagePart
-		for _, tc := range toolCalls {
-			toolName := tc.Function.Name
-			toolArgs := tc.Function.Arguments
-
-			if tsMode && toolName == toolSearchName {
-				result := e.handleToolSearch(ctx, ec, tc, allToolDefs, discovered)
-				messages = append(messages, result)
-				toolResults = append(toolResults, ToolResult{
-					ToolCallID: tc.ID,
-					ToolName:   toolName,
-					Content:    result.Content,
-				})
-				continue
-			}
-
-			tool, ok := toolMap[toolName]
-			if !ok {
-				errMsg := fmt.Sprintf("tool %q not found", toolName)
-				ec.l.WithField("tool", toolName).Warn("[Tool] tool not registered, skipping")
-				messages = append(messages, openai.ChatCompletionMessage{
-					Role:       openai.ChatMessageRoleTool,
-					Content:    errMsg,
-					ToolCallID: tc.ID,
-					Name:       toolName,
-				})
-				toolResults = append(toolResults, ToolResult{
-					ToolCallID: tc.ID,
-					ToolName:   toolName,
-					Content:    errMsg,
-				})
-				continue
-			}
-
-			ec.l.WithFields(log.Fields{"tool": toolName, "args": truncateLog(toolArgs, 200)}).Info("[Tool] >> invoke")
-			calledTools[toolName] = true
-			callStart := time.Now()
-			output, callErr := tool.Call(ctx, toolArgs)
-			callDur := time.Since(callStart)
-			toolResult := output
-			if callErr != nil {
-				toolResult = fmt.Sprintf("error: %s", callErr)
-				ec.l.WithFields(log.Fields{"tool": toolName, "duration": callDur}).WithError(callErr).Error("[Tool] << failed")
-			} else {
-				ec.l.WithFields(log.Fields{"tool": toolName, "duration": callDur, "preview": truncateLog(output, 200)}).Info("[Tool] << ok")
-			}
-
-			toolMsg, fileParts := e.buildToolResponseParts(ctx, tc.ID, toolName, toolResult, callErr == nil, ec.l)
-			messages = append(messages, toolMsg)
-			toolResults = append(toolResults, ToolResult{
-				ToolCallID: tc.ID,
-				ToolName:   toolName,
-				Content:    toolMsg.Content,
-			})
-			pendingParts = append(pendingParts, fileParts...)
 		}
-
-		if err := e.memory.SaveToolCallRound(ctx, ec.conv.ID, content, toolCalls, toolResults); err != nil {
-			ec.l.WithError(err).Warn("[Memory] save tool call round failed")
-		}
-
-		if len(pendingParts) > 0 {
-			parts := append([]openai.ChatMessagePart{
-				{Type: openai.ChatMessagePartTypeText, Text: "工具返回了以下文件:"},
-			}, pendingParts...)
-			messages = append(messages, openai.ChatCompletionMessage{
-				Role:         openai.ChatMessageRoleUser,
-				MultiContent: parts,
-			})
-		}
+		st.Messages = e.appendAssistantToolRound(ctx, ec, st.Messages, asst, st.ToolMap, st.TSMode, st.AllToolDefs, st.Discovered, loopDet, calledTools)
 	}
 
 	if !completed {
