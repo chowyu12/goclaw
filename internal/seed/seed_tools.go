@@ -260,7 +260,7 @@ func defaultTools() []model.Tool {
 		},
 		{
 			Name:        "browser",
-			Description: "控制网页浏览器。支持导航、截图、元素快照与交互、表单填充、Cookie/Storage 管理、Console/Network 监控、设备仿真等操作。先用 snapshot 获取元素引用，再通过 ref 执行交互。",
+			Description: "控制网页浏览器。支持导航、截图、元素快照与交互、表单填充、Cookie/Storage 管理、Console/Network 监控、设备仿真等。多标签时：每个标签页 snapshot 产生的 ref 仅对该页有效；若操作页与当前激活页不一致，请在 click/type/snapshot 等参数中传入 target_id（由 tabs 或 open_tab 返回）。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
 			Timeout:     120,
@@ -431,7 +431,8 @@ func browserToolDef() map[string]any {
 			"wait (wait for condition), " +
 			"tabs/open_tab/close_tab/close (tab management), " +
 			"dialog/upload (misc). " +
-			"Use 'snapshot' first to see elements with refs like 'e1', then use refs for click/type/etc.",
+			"Multi-tab: refs from snapshot are scoped per tab. If the active tab differs from the page you snapshotted, pass target_id (from tabs or open_tab) on snapshot, click, type, and other ref-using actions. " +
+			"Use snapshot first to see refs like e1, then use those refs on the same target_id.",
 		"parameters": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -441,7 +442,7 @@ func browserToolDef() map[string]any {
 					"description": "Action to perform",
 				},
 				"url":           map[string]any{"type": "string", "description": "URL for navigate/open_tab"},
-				"ref":           map[string]any{"type": "string", "description": "Element ref from snapshot (e.g. 'e1')"},
+				"ref":           map[string]any{"type": "string", "description": "Element ref from snapshot on this tab (e.g. 'e1'); must match target_id used when snapshot was taken"},
 				"text":          map[string]any{"type": "string", "description": "Text to type"},
 				"expression":    map[string]any{"type": "string", "description": "JavaScript expression for evaluate"},
 				"selector":      map[string]any{"type": "string", "description": "CSS selector (alternative to ref)"},
@@ -454,7 +455,7 @@ func browserToolDef() map[string]any {
 				"end_ref":       map[string]any{"type": "string", "description": "Drag end element ref"},
 				"values":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Select option values"},
 				"fields":        map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"ref": map[string]any{"type": "string"}, "value": map[string]any{"type": "string"}, "type": map[string]any{"type": "string"}}}, "description": "Form fields [{ref,value,type}]"},
-				"target_id":     map[string]any{"type": "string", "description": "Tab ID from tabs action"},
+				"target_id":     map[string]any{"type": "string", "description": "Tab ID from tabs or open_tab; omit for active tab. With multiple tabs, pass the same tab you used for snapshot so refs stay valid"},
 				"wait_time":     map[string]any{"type": "integer", "description": "Wait milliseconds"},
 				"wait_text":     map[string]any{"type": "string", "description": "Wait for text to appear on page"},
 				"wait_selector": map[string]any{"type": "string", "description": "Wait for CSS selector to become visible"},

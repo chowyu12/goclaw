@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsURLSafe(t *testing.T) {
@@ -135,8 +136,8 @@ func TestHandler_InvalidJSON(t *testing.T) {
 
 func TestBrowserManager_CloseNotRunning(t *testing.T) {
 	bm := &browserManager{
-		tabs: make(map[string]*tabInfo),
-		refs: make(map[string]elementInfo),
+		tabs:    make(map[string]*tabInfo),
+		tabRefs: make(map[string]map[string]elementInfo),
 	}
 	r, err := bm.closeBrowser()
 	if err != nil {
@@ -149,9 +150,13 @@ func TestBrowserManager_CloseNotRunning(t *testing.T) {
 
 func TestBrowserManager_RefSelector_NotFound(t *testing.T) {
 	bm := &browserManager{
-		refs: make(map[string]elementInfo),
+		tabs: map[string]*tabInfo{
+			"t1": {id: "t1"},
+		},
+		activeTab: "t1",
+		tabRefs:   make(map[string]map[string]elementInfo),
 	}
-	_, err := bm.refSelector("e99")
+	_, err := bm.refSelector("", "e99")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected 'not found', got %v", err)
 	}
@@ -159,11 +164,15 @@ func TestBrowserManager_RefSelector_NotFound(t *testing.T) {
 
 func TestBrowserManager_RefSelector_Found(t *testing.T) {
 	bm := &browserManager{
-		refs: map[string]elementInfo{
-			"e1": {Ref: "e1", Tag: "button", Text: "Submit"},
+		tabs: map[string]*tabInfo{
+			"t1": {id: "t1"},
+		},
+		activeTab: "t1",
+		tabRefs: map[string]map[string]elementInfo{
+			"t1": {"e1": {Ref: "e1", Tag: "button", Text: "Submit"}},
 		},
 	}
-	sel, err := bm.refSelector("e1")
+	sel, err := bm.refSelector("", "e1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -172,10 +181,35 @@ func TestBrowserManager_RefSelector_Found(t *testing.T) {
 	}
 }
 
+func TestRefuseTypeIfRefNotTextField(t *testing.T) {
+	bm := &browserManager{
+		tabs: map[string]*tabInfo{
+			"t1": {id: "t1"},
+		},
+		activeTab: "t1",
+		tabRefs: map[string]map[string]elementInfo{
+			"t1": {
+				"eBtn": {Ref: "eBtn", Tag: "button", Text: "Search"},
+				"eIn":  {Ref: "eIn", Tag: "input", Type: "text"},
+			},
+		},
+	}
+	if err := bm.refuseTypeIfRefNotTextField("", "eBtn"); err == nil {
+		t.Fatal("expected error for button ref")
+	}
+	if err := bm.refuseTypeIfRefNotTextField("", "eIn"); err != nil {
+		t.Fatalf("text input should be allowed: %v", err)
+	}
+}
+
 func TestBrowserManager_ResolveSelector(t *testing.T) {
 	bm := &browserManager{
-		refs: map[string]elementInfo{
-			"e3": {Ref: "e3", Tag: "input"},
+		tabs: map[string]*tabInfo{
+			"t1": {id: "t1"},
+		},
+		activeTab: "t1",
+		tabRefs: map[string]map[string]elementInfo{
+			"t1": {"e3": {Ref: "e3", Tag: "input"}},
 		},
 	}
 
@@ -205,6 +239,53 @@ func TestBrowserManager_ResolveSelector(t *testing.T) {
 			t.Error("expected error for missing ref and selector")
 		}
 	})
+}
+
+func TestEvictOldestTab_EvictsNonActivePreservesTabOrder(t *testing.T) {
+	noopCancel := func() {}
+	bm := &browserManager{
+		tabs: map[string]*tabInfo{
+			"oldid": {id: "oldid", cancel: noopCancel},
+			"newid": {id: "newid", cancel: noopCancel},
+		},
+		tabOrder:  []string{"oldid", "newid"},
+		activeTab: "oldid",
+		maxTabs:   1,
+		tabRefs: map[string]map[string]elementInfo{
+			"oldid": {"e1": {Ref: "e1"}},
+			"newid": {"e2": {Ref: "e2"}},
+		},
+	}
+	bm.evictOldestTab()
+	if len(bm.tabs) != 1 {
+		t.Fatalf("tabs len = %d, want 1", len(bm.tabs))
+	}
+	if _, ok := bm.tabs["oldid"]; !ok {
+		t.Fatal("active tab should remain")
+	}
+	if _, ok := bm.tabs["newid"]; ok {
+		t.Fatal("non-active tab should be evicted")
+	}
+	if _, ok := bm.tabRefs["newid"]; ok {
+		t.Fatal("evicted tab refs should be removed")
+	}
+	for _, id := range bm.tabOrder {
+		if _, ok := bm.tabs[id]; !ok {
+			t.Errorf("tabOrder %q not in tabs", id)
+		}
+	}
+}
+
+func TestEventMonitor_LastNetworkActivityWallClock(t *testing.T) {
+	m := newEventMonitor()
+	m.addRequest("r1", "GET", "https://example.com/a")
+	before := time.Now()
+	m.addResponse("r1", 200, "text/html")
+	after := time.Now()
+	ts := m.lastNetworkActivity()
+	if ts.Before(before) || ts.After(after.Add(2*time.Second)) {
+		t.Fatalf("lastNetworkActivity = %v, want in [%v, %v+2s]", ts, before, after)
+	}
 }
 
 func TestFormatSnapshot(t *testing.T) {
@@ -544,8 +625,8 @@ func TestEventMonitor_PendingRequests(t *testing.T) {
 
 func TestActionConsole_NilMonitor(t *testing.T) {
 	bm := &browserManager{
-		tabs: make(map[string]*tabInfo),
-		refs: make(map[string]elementInfo),
+		tabs:    make(map[string]*tabInfo),
+		tabRefs: make(map[string]map[string]elementInfo),
 	}
 	result, err := bm.actionConsole(browserParams{})
 	if err != nil {
@@ -558,8 +639,8 @@ func TestActionConsole_NilMonitor(t *testing.T) {
 
 func TestActionNetwork_NilMonitor(t *testing.T) {
 	bm := &browserManager{
-		tabs: make(map[string]*tabInfo),
-		refs: make(map[string]elementInfo),
+		tabs:    make(map[string]*tabInfo),
+		tabRefs: make(map[string]map[string]elementInfo),
 	}
 	result, err := bm.actionNetwork(browserParams{})
 	if err != nil {

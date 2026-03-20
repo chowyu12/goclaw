@@ -18,7 +18,7 @@ import (
 	"github.com/chowyu12/goclaw/internal/tool/result"
 )
 
-func (bm *browserManager) actionNavigate(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionNavigate(reqCtx context.Context, p browserParams) (string, error) {
 	if p.URL == "" {
 		return "", fmt.Errorf("url is required for navigate")
 	}
@@ -31,21 +31,32 @@ func (bm *browserManager) actionNavigate(_ context.Context, p browserParams) (st
 		return "", err
 	}
 
-	if err := chromedp.Run(tabCtx, chromedp.Navigate(p.URL)); err != nil {
+	if err := runChromedpNavigate(tabCtx, reqCtx, p.URL); err != nil {
 		return "", fmt.Errorf("navigate: %w", err)
 	}
-	_ = chromedp.Run(tabCtx, chromedp.WaitReady("body", chromedp.ByQuery))
 
+	tabID, err := bm.effectiveTabID(p.TargetID)
+	if err != nil {
+		return "", err
+	}
 	bm.mu.Lock()
-	bm.refs = make(map[string]elementInfo)
+	if bm.tabRefs == nil {
+		bm.tabRefs = make(map[string]map[string]elementInfo)
+	}
+	bm.tabRefs[tabID] = make(map[string]elementInfo)
 	bm.mu.Unlock()
 
-	bm.updateTabInfo(tabCtx)
+	deadline, _, postWait := navigateMergedDeadline(reqCtx, p.URL)
+	extDL := minTime(time.Now().Add(postWait), deadline)
+	extCtx, extCancel := context.WithDeadline(tabCtx, extDL)
+	defer extCancel()
+
+	bm.updateTabInfo(extCtx)
 
 	var title string
-	_ = chromedp.Run(tabCtx, chromedp.Title(&title))
+	_ = chromedp.Run(extCtx, chromedp.Title(&title))
 
-	pageText := fetchPageText(tabCtx, 3000)
+	pageText := fetchPageText(extCtx, 3000)
 	meta := browserJSON("ok", true, "url", p.URL, "title", title)
 	if pageText == "" {
 		return meta, nil
@@ -53,29 +64,31 @@ func (bm *browserManager) actionNavigate(_ context.Context, p browserParams) (st
 	return meta + "\n\n" + wrapUntrustedContent(pageText), nil
 }
 
-func (bm *browserManager) actionScreenshot(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionScreenshot(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
+	runCtx, cancel := mergedActionContextMax(tabCtx, reqCtx, 90*time.Second)
+	defer cancel()
 
 	var buf []byte
 
 	switch {
 	case p.Ref != "":
-		sel, selErr := bm.refSelector(p.Ref)
+		sel, selErr := bm.refSelector(p.TargetID, p.Ref)
 		if selErr != nil {
 			return "", selErr
 		}
-		if err := chromedp.Run(tabCtx, chromedp.Screenshot(sel, &buf, chromedp.ByQuery)); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.Screenshot(sel, &buf, chromedp.ByQuery)); err != nil {
 			return "", fmt.Errorf("screenshot element: %w", err)
 		}
 	case p.FullPage:
-		if err := chromedp.Run(tabCtx, chromedp.FullScreenshot(&buf, 90)); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.FullScreenshot(&buf, 90)); err != nil {
 			return "", fmt.Errorf("full screenshot: %w", err)
 		}
 	default:
-		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			var captureErr error
 			buf, captureErr = page.CaptureScreenshot().Do(ctx)
 			return captureErr
@@ -92,23 +105,27 @@ func (bm *browserManager) actionScreenshot(_ context.Context, p browserParams) (
 	return result.NewFileResult(filePath, "image/png", "Browser screenshot"), nil
 }
 
-func (bm *browserManager) actionSnapshot(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionSnapshot(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
-	return bm.takeSnapshot(tabCtx, p.Selector)
+	runCtx, cancel := mergedActionContext(tabCtx, reqCtx)
+	defer cancel()
+	return bm.takeSnapshot(runCtx, p.TargetID, p.Selector)
 }
 
-func (bm *browserManager) actionGetText(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionGetText(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
+	runCtx, cancel := mergedActionContext(tabCtx, reqCtx)
+	defer cancel()
 
 	js := `(document.body&&document.body.innerText||'').substring(0,10000)`
 	if p.Ref != "" {
-		sel, selErr := bm.refSelector(p.Ref)
+		sel, selErr := bm.refSelector(p.TargetID, p.Ref)
 		if selErr != nil {
 			return "", selErr
 		}
@@ -118,14 +135,14 @@ func (bm *browserManager) actionGetText(_ context.Context, p browserParams) (str
 	}
 
 	var text string
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &text)); err != nil {
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &text)); err != nil {
 		return "", fmt.Errorf("get_text: %w", err)
 	}
 
 	return wrapUntrustedContent(text), nil
 }
 
-func (bm *browserManager) actionEvaluate(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionEvaluate(reqCtx context.Context, p browserParams) (string, error) {
 	if p.Expression == "" {
 		return "", fmt.Errorf("expression is required for evaluate")
 	}
@@ -135,11 +152,11 @@ func (bm *browserManager) actionEvaluate(_ context.Context, p browserParams) (st
 		return "", err
 	}
 
-	evalCtx, cancel := context.WithTimeout(tabCtx, 10*time.Second)
+	runCtx, cancel := mergedActionContextMax(tabCtx, reqCtx, 10*time.Second)
 	defer cancel()
 
 	var evalResult any
-	if err := chromedp.Run(evalCtx, chromedp.Evaluate(p.Expression, &evalResult)); err != nil {
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(p.Expression, &evalResult)); err != nil {
 		return "", fmt.Errorf("evaluate: %w", err)
 	}
 
@@ -147,14 +164,16 @@ func (bm *browserManager) actionEvaluate(_ context.Context, p browserParams) (st
 	return wrapUntrustedContent(string(data)), nil
 }
 
-func (bm *browserManager) actionPDF(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionPDF(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
+	runCtx, cancel := mergedActionContextMax(tabCtx, reqCtx, interactionDeadlineCap)
+	defer cancel()
 
 	var buf []byte
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		var printErr error
 		buf, _, printErr = page.PrintToPDF().Do(ctx)
 		return printErr
@@ -170,7 +189,33 @@ func (bm *browserManager) actionPDF(_ context.Context, p browserParams) (string,
 	return result.NewFileResult(filePath, "application/pdf", "Browser page PDF"), nil
 }
 
-func (bm *browserManager) actionClick(_ context.Context, p browserParams) (string, error) {
+// refuseTypeIfRefNotTextField 根据 snapshot 元数据快速拒绝明显不能输入的 ref（按钮、链接等）。
+func (bm *browserManager) refuseTypeIfRefNotTextField(targetID, ref string) error {
+	meta, ok := bm.refMeta(targetID, ref)
+	if !ok {
+		return nil
+	}
+	tag := strings.ToLower(meta.Tag)
+	role := strings.ToLower(meta.Role)
+	switch tag {
+	case "button", "select", "a", "summary":
+		return fmt.Errorf("ref %q is <%s>, not a text field; use click or choose input/textarea from snapshot", ref, tag)
+	}
+	if tag == "input" {
+		it := strings.ToLower(meta.Type)
+		switch it {
+		case "button", "submit", "reset", "checkbox", "radio", "file", "hidden", "image":
+			return fmt.Errorf("ref %q is input[type=%s], cannot type text; pick type=text/search or textarea", ref, meta.Type)
+		}
+	}
+	switch role {
+	case "button", "link", "tab", "menuitem", "option", "checkbox", "radio", "switch":
+		return fmt.Errorf("ref %q has role=%s, not for typing; pick searchbox/textbox or input/textarea", ref, meta.Role)
+	}
+	return nil
+}
+
+func (bm *browserManager) actionClick(reqCtx context.Context, p browserParams) (string, error) {
 	sel, err := bm.resolveSelector(p)
 	if err != nil {
 		return "", err
@@ -180,39 +225,67 @@ func (bm *browserManager) actionClick(_ context.Context, p browserParams) (strin
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	switch {
 	case p.DoubleClick:
-		if err := chromedp.Run(tabCtx, chromedp.DoubleClick(sel, chromedp.ByQuery)); err != nil {
+		_ = chromedp.Run(runCtx, chromedp.ScrollIntoView(sel, chromedp.ByQuery))
+		visTo, v1 := context.WithTimeout(runCtx, interactionWaitVisibleTimeout)
+		if err := chromedp.Run(visTo, chromedp.WaitVisible(sel, chromedp.ByQuery)); err != nil {
+			v1()
+			return "", fmt.Errorf("double click: ref %q not visible: %w", p.Ref, err)
+		}
+		v1()
+		clickTo, c1 := context.WithTimeout(runCtx, interactionPointerPhaseTimeout)
+		if err := chromedp.Run(clickTo, chromedp.DoubleClick(sel, chromedp.ByQuery)); err != nil {
+			c1()
 			return "", fmt.Errorf("double click: %w", err)
 		}
+		c1()
 	case p.Button == "right":
 		js := fmt.Sprintf(`(function(){var el=document.querySelector(%q);if(!el)return false;el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2}));return true})()`, sel)
 		var ok bool
-		if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &ok)); err != nil || !ok {
+		if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &ok)); err != nil || !ok {
 			return "", fmt.Errorf("right click failed")
 		}
 	case p.Button == "middle":
 		js := fmt.Sprintf(`(function(){var el=document.querySelector(%q);if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,button:1}));return true})()`, sel)
 		var ok bool
-		if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &ok)); err != nil || !ok {
+		if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &ok)); err != nil || !ok {
 			return "", fmt.Errorf("middle click failed")
 		}
 	default:
-		if err := chromedp.Run(tabCtx, chromedp.Click(sel, chromedp.ByQuery)); err != nil {
-			return "", fmt.Errorf("click: %w", err)
+		_ = chromedp.Run(runCtx, chromedp.ScrollIntoView(sel, chromedp.ByQuery))
+		visTo, v1 := context.WithTimeout(runCtx, interactionWaitVisibleTimeout)
+		if err := chromedp.Run(visTo, chromedp.WaitVisible(sel, chromedp.ByQuery)); err != nil {
+			v1()
+			return "", fmt.Errorf("click: ref %q not visible (stale ref or overlay?): %w", p.Ref, err)
 		}
+		v1()
+		clickTo, c1 := context.WithTimeout(runCtx, interactionPointerPhaseTimeout)
+		if err := chromedp.Run(clickTo, chromedp.Click(sel, chromedp.ByQuery)); err != nil {
+			c1()
+			var st string
+			if err2 := chromedp.Run(runCtx, chromedp.Evaluate(jsSyntheticPrimaryClick(sel), &st)); err2 != nil {
+				return "", fmt.Errorf("click: %w", err)
+			}
+			if st != "ok" {
+				return "", fmt.Errorf("click: %w (fallback: %s)", err, st)
+			}
+		}
+		c1()
 	}
 
 	time.Sleep(300 * time.Millisecond)
-	bm.updateTabInfo(tabCtx)
+	bm.updateTabInfo(runCtx)
 
 	var currentURL string
-	_ = chromedp.Run(tabCtx, chromedp.Location(&currentURL))
+	_ = chromedp.Run(runCtx, chromedp.Location(&currentURL))
 	return browserJSON("ok", true, "url", currentURL), nil
 }
 
-func (bm *browserManager) actionType(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionType(reqCtx context.Context, p browserParams) (string, error) {
 	if p.Text == "" {
 		return "", fmt.Errorf("text is required for type")
 	}
@@ -220,37 +293,87 @@ func (bm *browserManager) actionType(_ context.Context, p browserParams) (string
 	if err != nil {
 		return "", err
 	}
+	if err := bm.refuseTypeIfRefNotTextField(p.TargetID, p.Ref); err != nil {
+		return "", err
+	}
 
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
 
+	maxDur := defaultInteractionDeadline
+	if p.Slowly {
+		maxDur += time.Duration(len(p.Text)) * 200 * time.Millisecond
+	}
+	runCtx, runCancel := mergedActionContextMax(tabCtx, reqCtx, maxDur)
+	defer runCancel()
+
+	_ = chromedp.Run(runCtx, chromedp.ScrollIntoView(sel, chromedp.ByQuery))
+
+	waitVis, wvCancel := context.WithTimeout(runCtx, interactionWaitVisibleTimeout)
+	if err := chromedp.Run(waitVis, chromedp.WaitVisible(sel, chromedp.ByQuery)); err != nil {
+		wvCancel()
+		return "", fmt.Errorf("type: ref %q not visible in time (wrong/stale ref or overlay?): %w", p.Ref, err)
+	}
+	wvCancel()
+
+	tryTypeWithFallback := func(text string) error {
+		keysTo, kCancel := context.WithTimeout(runCtx, interactionPointerPhaseTimeout)
+		sendErr := chromedp.Run(keysTo, chromedp.SendKeys(sel, text, chromedp.ByQuery))
+		kCancel()
+		if sendErr == nil {
+			return nil
+		}
+		var status string
+		if err2 := chromedp.Run(runCtx, chromedp.Evaluate(jsSetFormControlValue(sel, text), &status)); err2 != nil {
+			return sendErr
+		}
+		switch status {
+		case "ok":
+			return nil
+		case "missing":
+			return fmt.Errorf("ref %q not in DOM (re-run snapshot)", p.Ref)
+		case "not_editable":
+			return fmt.Errorf("ref %q is not INPUT/TEXTAREA/contenteditable: %w", p.Ref, sendErr)
+		default:
+			return sendErr
+		}
+	}
+
 	if p.Slowly {
 		for _, ch := range p.Text {
-			if err := chromedp.Run(tabCtx, chromedp.SendKeys(sel, string(ch), chromedp.ByQuery)); err != nil {
-				return "", fmt.Errorf("type slowly: %w", err)
+			oneKey, oneCancel := context.WithTimeout(runCtx, 8*time.Second)
+			chErr := chromedp.Run(oneKey, chromedp.SendKeys(sel, string(ch), chromedp.ByQuery))
+			oneCancel()
+			if chErr != nil {
+				if fbErr := tryTypeWithFallback(p.Text); fbErr != nil {
+					return "", fmt.Errorf("type slowly: %w", chErr)
+				}
+				break
 			}
 			time.Sleep(80 * time.Millisecond)
 		}
 	} else {
-		if err := chromedp.Run(tabCtx, chromedp.SendKeys(sel, p.Text, chromedp.ByQuery)); err != nil {
+		if err := tryTypeWithFallback(p.Text); err != nil {
 			return "", fmt.Errorf("type: %w", err)
 		}
 	}
 
 	if p.Submit {
-		if err := chromedp.Run(tabCtx, chromedp.SendKeys(sel, "\r", chromedp.ByQuery)); err != nil {
+		subTo, subCancel := context.WithTimeout(runCtx, 8*time.Second)
+		if err := chromedp.Run(subTo, chromedp.SendKeys(sel, "\r", chromedp.ByQuery)); err != nil {
 			log.WithError(err).Warn("[Browser] submit (Enter) failed")
 		}
+		subCancel()
 		time.Sleep(500 * time.Millisecond)
-		bm.updateTabInfo(tabCtx)
+		bm.updateTabInfo(runCtx)
 	}
 
 	return browserJSON("ok", true), nil
 }
 
-func (bm *browserManager) actionHover(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionHover(reqCtx context.Context, p browserParams) (string, error) {
 	sel, err := bm.resolveSelector(p)
 	if err != nil {
 		return "", err
@@ -260,6 +383,8 @@ func (bm *browserManager) actionHover(_ context.Context, p browserParams) (strin
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	js := fmt.Sprintf(`(function(){
 		var el=document.querySelector(%q);
@@ -270,23 +395,23 @@ func (bm *browserManager) actionHover(_ context.Context, p browserParams) (strin
 	})()`, sel)
 
 	var ok bool
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &ok)); err != nil || !ok {
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &ok)); err != nil || !ok {
 		return "", fmt.Errorf("hover failed on %q", sel)
 	}
 
 	return browserJSON("ok", true), nil
 }
 
-func (bm *browserManager) actionDrag(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionDrag(reqCtx context.Context, p browserParams) (string, error) {
 	if p.StartRef == "" || p.EndRef == "" {
 		return "", fmt.Errorf("start_ref and end_ref are required for drag")
 	}
 
-	startSel, err := bm.refSelector(p.StartRef)
+	startSel, err := bm.refSelector(p.TargetID, p.StartRef)
 	if err != nil {
 		return "", err
 	}
-	endSel, err := bm.refSelector(p.EndRef)
+	endSel, err := bm.refSelector(p.TargetID, p.EndRef)
 	if err != nil {
 		return "", err
 	}
@@ -295,6 +420,8 @@ func (bm *browserManager) actionDrag(_ context.Context, p browserParams) (string
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	js := fmt.Sprintf(`(function(){
 		var s=document.querySelector(%q), e=document.querySelector(%q);
@@ -309,7 +436,7 @@ func (bm *browserManager) actionDrag(_ context.Context, p browserParams) (string
 	})()`, startSel, endSel)
 
 	var dragResult string
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &dragResult)); err != nil {
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &dragResult)); err != nil {
 		return "", fmt.Errorf("drag: %w", err)
 	}
 	if dragResult != "ok" {
@@ -319,7 +446,7 @@ func (bm *browserManager) actionDrag(_ context.Context, p browserParams) (string
 	return browserJSON("ok", true), nil
 }
 
-func (bm *browserManager) actionSelect(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionSelect(reqCtx context.Context, p browserParams) (string, error) {
 	sel, err := bm.resolveSelector(p)
 	if err != nil {
 		return "", err
@@ -332,6 +459,8 @@ func (bm *browserManager) actionSelect(_ context.Context, p browserParams) (stri
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	valuesJS, _ := json.Marshal(p.Values)
 	js := fmt.Sprintf(`(function(){
@@ -346,7 +475,7 @@ func (bm *browserManager) actionSelect(_ context.Context, p browserParams) (stri
 	})()`, sel, string(valuesJS))
 
 	var selectResult string
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &selectResult)); err != nil {
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &selectResult)); err != nil {
 		return "", fmt.Errorf("select: %w", err)
 	}
 	if selectResult != "ok" {
@@ -356,7 +485,7 @@ func (bm *browserManager) actionSelect(_ context.Context, p browserParams) (stri
 	return browserJSON("ok", true), nil
 }
 
-func (bm *browserManager) actionFillForm(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionFillForm(reqCtx context.Context, p browserParams) (string, error) {
 	if len(p.Fields) == 0 {
 		return "", fmt.Errorf("fields is required for fill_form")
 	}
@@ -366,17 +495,26 @@ func (bm *browserManager) actionFillForm(_ context.Context, p browserParams) (st
 		return "", err
 	}
 
+	extra := time.Duration(len(p.Fields)) * 30 * time.Second
+	if extra > 90*time.Second {
+		extra = 90 * time.Second
+	}
+	maxDur := defaultInteractionDeadline + extra
+	runCtx, runCancel := mergedActionContextMax(tabCtx, reqCtx, maxDur)
+	defer runCancel()
+
 	var filled int
 	for _, f := range p.Fields {
-		sel, selErr := bm.refSelector(f.Ref)
+		sel, selErr := bm.refSelector(p.TargetID, f.Ref)
 		if selErr != nil {
 			return "", fmt.Errorf("fill field %s: %w", f.Ref, selErr)
 		}
 
 		clearJS := fmt.Sprintf(`(function(){var el=document.querySelector(%q);if(el){el.value='';el.dispatchEvent(new Event('input',{bubbles:true}))}})()`, sel)
-		_ = chromedp.Run(tabCtx, chromedp.Evaluate(clearJS, nil))
+		_ = chromedp.Run(runCtx, chromedp.Evaluate(clearJS, nil))
 
-		if err := chromedp.Run(tabCtx, chromedp.SendKeys(sel, f.Value, chromedp.ByQuery)); err != nil {
+		_ = chromedp.Run(runCtx, chromedp.ScrollIntoView(sel, chromedp.ByQuery))
+		if err := chromedp.Run(runCtx, chromedp.SendKeys(sel, f.Value, chromedp.ByQuery)); err != nil {
 			return "", fmt.Errorf("fill field %s: %w", f.Ref, err)
 		}
 		filled++
@@ -385,25 +523,27 @@ func (bm *browserManager) actionFillForm(_ context.Context, p browserParams) (st
 	return browserJSON("ok", true, "filled", filled), nil
 }
 
-func (bm *browserManager) actionScroll(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionScroll(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	if p.Ref != "" {
-		sel, selErr := bm.refSelector(p.Ref)
+		sel, selErr := bm.refSelector(p.TargetID, p.Ref)
 		if selErr != nil {
 			return "", selErr
 		}
-		if err := chromedp.Run(tabCtx, chromedp.ScrollIntoView(sel, chromedp.ByQuery)); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.ScrollIntoView(sel, chromedp.ByQuery)); err != nil {
 			return "", fmt.Errorf("scroll to element: %w", err)
 		}
 		return browserJSON("ok", true, "scrolled_to", p.Ref), nil
 	}
 
 	if p.Selector != "" {
-		if err := chromedp.Run(tabCtx, chromedp.ScrollIntoView(p.Selector, chromedp.ByQuery)); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.ScrollIntoView(p.Selector, chromedp.ByQuery)); err != nil {
 			return "", fmt.Errorf("scroll to selector: %w", err)
 		}
 		return browserJSON("ok", true, "scrolled_to", p.Selector), nil
@@ -413,14 +553,14 @@ func (bm *browserManager) actionScroll(_ context.Context, p browserParams) (stri
 	if p.ScrollY == 0 {
 		js = `window.scrollTo(0,document.body.scrollHeight)`
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, nil)); err != nil {
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(js, nil)); err != nil {
 		return "", fmt.Errorf("scroll: %w", err)
 	}
 
 	return browserJSON("ok", true), nil
 }
 
-func (bm *browserManager) actionUpload(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionUpload(reqCtx context.Context, p browserParams) (string, error) {
 	sel, err := bm.resolveSelector(p)
 	if err != nil {
 		return "", err
@@ -439,18 +579,20 @@ func (bm *browserManager) actionUpload(_ context.Context, p browserParams) (stri
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
-	if err := chromedp.Run(tabCtx, chromedp.SetUploadFiles(sel, p.Paths, chromedp.ByQuery)); err != nil {
+	if err := chromedp.Run(runCtx, chromedp.SetUploadFiles(sel, p.Paths, chromedp.ByQuery)); err != nil {
 		return "", fmt.Errorf("upload: %w", err)
 	}
 
 	changeJS := fmt.Sprintf(`(function(){var el=document.querySelector(%q);if(el)el.dispatchEvent(new Event('change',{bubbles:true}))})()`, sel)
-	_ = chromedp.Run(tabCtx, chromedp.Evaluate(changeJS, nil))
+	_ = chromedp.Run(runCtx, chromedp.Evaluate(changeJS, nil))
 
 	return browserJSON("ok", true, "uploaded", len(p.Paths)), nil
 }
 
-func (bm *browserManager) actionWait(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionWait(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
@@ -461,8 +603,9 @@ func (bm *browserManager) actionWait(_ context.Context, p browserParams) (string
 		return browserJSON("ok", true, "waited_ms", p.WaitTime), nil
 	}
 
-	timeout := 15 * time.Second
-	waitCtx, cancel := context.WithTimeout(tabCtx, timeout)
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
+	waitCtx, cancel := context.WithTimeout(runCtx, 15*time.Second)
 	defer cancel()
 
 	if p.WaitSelector != "" {
@@ -481,7 +624,7 @@ func (bm *browserManager) actionWait(_ context.Context, p browserParams) (string
 				return "", fmt.Errorf("wait timeout: text %q not found", p.WaitText)
 			case <-ticker.C:
 				var text string
-				_ = chromedp.Run(tabCtx, chromedp.Evaluate(`document.body.innerText`, &text))
+				_ = chromedp.Run(waitCtx, chromedp.Evaluate(`document.body.innerText`, &text))
 				if strings.Contains(text, p.WaitText) {
 					return browserJSON("ok", true, "found_text", p.WaitText), nil
 				}
@@ -498,7 +641,7 @@ func (bm *browserManager) actionWait(_ context.Context, p browserParams) (string
 				return "", fmt.Errorf("wait timeout: URL %q not matched", p.WaitURL)
 			case <-ticker.C:
 				var currentURL string
-				_ = chromedp.Run(tabCtx, chromedp.Location(&currentURL))
+				_ = chromedp.Run(waitCtx, chromedp.Location(&currentURL))
 				if strings.Contains(currentURL, p.WaitURL) {
 					return browserJSON("ok", true, "url", currentURL), nil
 				}
@@ -516,7 +659,7 @@ func (bm *browserManager) actionWait(_ context.Context, p browserParams) (string
 			case <-ticker.C:
 				var result bool
 				js := fmt.Sprintf(`Boolean(%s)`, p.WaitFn)
-				if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &result)); err == nil && result {
+				if err := chromedp.Run(waitCtx, chromedp.Evaluate(js, &result)); err == nil && result {
 					return browserJSON("ok", true, "predicate", p.WaitFn), nil
 				}
 			}
@@ -526,7 +669,7 @@ func (bm *browserManager) actionWait(_ context.Context, p browserParams) (string
 	if p.WaitLoad != "" {
 		switch p.WaitLoad {
 		case "networkidle":
-			return bm.waitNetworkIdle(waitCtx, tabCtx)
+			return bm.waitNetworkIdle(waitCtx)
 		case "domcontentloaded":
 			if err := chromedp.Run(waitCtx, chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
 				return "", fmt.Errorf("wait domcontentloaded: %w", err)
@@ -547,7 +690,7 @@ func (bm *browserManager) actionWait(_ context.Context, p browserParams) (string
 	return browserJSON("ok", true, "message", "no wait condition specified"), nil
 }
 
-func (bm *browserManager) waitNetworkIdle(waitCtx, tabCtx context.Context) (string, error) {
+func (bm *browserManager) waitNetworkIdle(waitCtx context.Context) (string, error) {
 	idleThreshold := 2 * time.Second
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -573,11 +716,13 @@ func (bm *browserManager) waitNetworkIdle(waitCtx, tabCtx context.Context) (stri
 	}
 }
 
-func (bm *browserManager) actionDialog(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionDialog(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	accept := true
 	if p.Accept != nil {
@@ -589,7 +734,7 @@ func (bm *browserManager) actionDialog(_ context.Context, p browserParams) (stri
 		action = action.WithPromptText(p.PromptText)
 	}
 
-	if err := chromedp.Run(tabCtx, action); err != nil {
+	if err := chromedp.Run(runCtx, action); err != nil {
 		return "", fmt.Errorf("dialog: %w", err)
 	}
 
@@ -619,36 +764,53 @@ func (bm *browserManager) actionTabs() (string, error) {
 	return string(data), nil
 }
 
-func (bm *browserManager) actionOpenTab(p browserParams) (string, error) {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
-
-	bm.evictOldestTab()
-
-	tabCtx, tabCancel := chromedp.NewContext(bm.allocCtx)
-
+func (bm *browserManager) actionOpenTab(reqCtx context.Context, p browserParams) (string, error) {
 	targetURL := "about:blank"
 	if p.URL != "" {
 		if err := isURLSafe(p.URL); err != nil {
-			tabCancel()
 			return "", err
 		}
 		targetURL = p.URL
 	}
 
-	if err := chromedp.Run(tabCtx, chromedp.Navigate(targetURL)); err != nil {
+	bm.mu.Lock()
+	bm.evictOldestTab()
+	tabCtx, tabCancel := chromedp.NewContext(bm.allocCtx, chromedp.WithErrorf(log.Errorf))
+	bm.attachTabMonitor(tabCtx)
+	bm.mu.Unlock()
+
+	var err error
+	if targetURL != "about:blank" {
+		err = runChromedpNavigate(tabCtx, reqCtx, targetURL)
+	} else {
+		err = chromedp.Run(tabCtx, chromedp.Navigate(targetURL))
+		if err == nil {
+			_ = chromedp.Run(tabCtx, chromedp.WaitReady("body", chromedp.ByQuery))
+		}
+	}
+	if err != nil {
 		tabCancel()
 		return "", fmt.Errorf("open_tab: %w", err)
 	}
-	_ = chromedp.Run(tabCtx, chromedp.WaitReady("body", chromedp.ByQuery))
+
+	deadline, _, postWait := navigateMergedDeadline(reqCtx, targetURL)
+	extDL := minTime(time.Now().Add(postWait), deadline)
+	extCtx, extCancel := context.WithDeadline(tabCtx, extDL)
+	defer extCancel()
 
 	var title string
-	_ = chromedp.Run(tabCtx, chromedp.Title(&title))
+	_ = chromedp.Run(extCtx, chromedp.Title(&title))
 
+	pageText := fetchPageText(extCtx, 3000)
+
+	bm.mu.Lock()
 	tabID := bm.addTab(tabCtx, tabCancel, targetURL, title)
-	bm.refs = make(map[string]elementInfo)
+	if bm.tabRefs == nil {
+		bm.tabRefs = make(map[string]map[string]elementInfo)
+	}
+	bm.tabRefs[tabID] = make(map[string]elementInfo)
+	bm.mu.Unlock()
 
-	pageText := fetchPageText(tabCtx, 3000)
 	meta := browserJSON("ok", true, "target_id", tabID, "url", targetURL, "title", title)
 	if pageText == "" {
 		return meta, nil
@@ -677,13 +839,13 @@ func (bm *browserManager) actionCloseTab(p browserParams) (string, error) {
 	tab.cancel()
 	delete(bm.tabs, targetID)
 	bm.removeFromTabOrder(targetID)
+	delete(bm.tabRefs, targetID)
 
 	if bm.activeTab == targetID {
 		for id := range bm.tabs {
 			bm.activeTab = id
 			break
 		}
-		bm.refs = make(map[string]elementInfo)
 	}
 
 	log.WithField("tab", targetID).Info("[Browser] tab closed")
@@ -701,11 +863,13 @@ func (bm *browserManager) removeFromTabOrder(tabID string) {
 
 // --- Cookie management ---
 
-func (bm *browserManager) actionCookies(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionCookies(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	op := p.Operation
 	if op == "" {
@@ -715,7 +879,7 @@ func (bm *browserManager) actionCookies(_ context.Context, p browserParams) (str
 	switch op {
 	case "get":
 		var cookies []*cdpNetwork.Cookie
-		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			var getErr error
 			cookies, getErr = cdpNetwork.GetCookies().Do(ctx)
 			return getErr
@@ -745,10 +909,10 @@ func (bm *browserManager) actionCookies(_ context.Context, p browserParams) (str
 		cookieURL := p.CookieURL
 		if cookieURL == "" {
 			var u string
-			_ = chromedp.Run(tabCtx, chromedp.Location(&u))
+			_ = chromedp.Run(runCtx, chromedp.Location(&u))
 			cookieURL = u
 		}
-		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			expr := cdpNetwork.SetCookie(p.CookieName, p.CookieValue).WithURL(cookieURL)
 			if p.CookieDomain != "" {
 				expr = expr.WithDomain(p.CookieDomain)
@@ -760,7 +924,7 @@ func (bm *browserManager) actionCookies(_ context.Context, p browserParams) (str
 		return browserJSON("ok", true, "name", p.CookieName), nil
 
 	case "clear":
-		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return cdpNetwork.ClearBrowserCookies().Do(ctx)
 		})); err != nil {
 			return "", fmt.Errorf("clear cookies: %w", err)
@@ -774,11 +938,13 @@ func (bm *browserManager) actionCookies(_ context.Context, p browserParams) (str
 
 // --- Storage management ---
 
-func (bm *browserManager) actionStorage(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionStorage(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	storageType := p.StorageType
 	if storageType == "" {
@@ -801,7 +967,7 @@ func (bm *browserManager) actionStorage(_ context.Context, p browserParams) (str
 			js = fmt.Sprintf(`%s.getItem(%q)||''`, jsObj, p.Key)
 		}
 		var result string
-		if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &result)); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &result)); err != nil {
 			return "", fmt.Errorf("storage get: %w", err)
 		}
 		return wrapUntrustedContent(result), nil
@@ -811,14 +977,14 @@ func (bm *browserManager) actionStorage(_ context.Context, p browserParams) (str
 			return "", fmt.Errorf("key is required for storage set")
 		}
 		js := fmt.Sprintf(`%s.setItem(%q,%q)`, jsObj, p.Key, p.Value)
-		if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, nil)); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.Evaluate(js, nil)); err != nil {
 			return "", fmt.Errorf("storage set: %w", err)
 		}
 		return browserJSON("ok", true, "key", p.Key), nil
 
 	case "clear":
 		js := fmt.Sprintf(`%s.clear()`, jsObj)
-		if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, nil)); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.Evaluate(js, nil)); err != nil {
 			return "", fmt.Errorf("storage clear: %w", err)
 		}
 		return browserJSON("ok", true, "message", storageType+"Storage cleared"), nil
@@ -859,7 +1025,7 @@ var keyMap = map[string]string{
 	"F12":        kb.F12,
 }
 
-func (bm *browserManager) actionPress(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionPress(reqCtx context.Context, p browserParams) (string, error) {
 	key := p.KeyName
 	if key == "" {
 		return "", fmt.Errorf("key_name is required for press")
@@ -869,6 +1035,8 @@ func (bm *browserManager) actionPress(_ context.Context, p browserParams) (strin
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	kbKey, ok := keyMap[key]
 	if !ok {
@@ -879,7 +1047,7 @@ func (bm *browserManager) actionPress(_ context.Context, p browserParams) (strin
 		}
 	}
 
-	if err := chromedp.Run(tabCtx, chromedp.KeyEvent(kbKey)); err != nil {
+	if err := chromedp.Run(runCtx, chromedp.KeyEvent(kbKey)); err != nil {
 		return "", fmt.Errorf("press key: %w", err)
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -888,51 +1056,57 @@ func (bm *browserManager) actionPress(_ context.Context, p browserParams) (strin
 
 // --- Navigation history ---
 
-func (bm *browserManager) actionBack(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionBack(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.NavigateBack()); err != nil {
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.NavigateBack()); err != nil {
 		return "", fmt.Errorf("back: %w", err)
 	}
 	time.Sleep(500 * time.Millisecond)
-	bm.updateTabInfo(tabCtx)
+	bm.updateTabInfo(runCtx)
 
 	var currentURL string
-	_ = chromedp.Run(tabCtx, chromedp.Location(&currentURL))
+	_ = chromedp.Run(runCtx, chromedp.Location(&currentURL))
 	return browserJSON("ok", true, "url", currentURL), nil
 }
 
-func (bm *browserManager) actionForward(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionForward(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.NavigateForward()); err != nil {
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.NavigateForward()); err != nil {
 		return "", fmt.Errorf("forward: %w", err)
 	}
 	time.Sleep(500 * time.Millisecond)
-	bm.updateTabInfo(tabCtx)
+	bm.updateTabInfo(runCtx)
 
 	var currentURL string
-	_ = chromedp.Run(tabCtx, chromedp.Location(&currentURL))
+	_ = chromedp.Run(runCtx, chromedp.Location(&currentURL))
 	return browserJSON("ok", true, "url", currentURL), nil
 }
 
-func (bm *browserManager) actionReload(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionReload(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Reload()); err != nil {
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Reload()); err != nil {
 		return "", fmt.Errorf("reload: %w", err)
 	}
-	_ = chromedp.Run(tabCtx, chromedp.WaitReady("body", chromedp.ByQuery))
-	bm.updateTabInfo(tabCtx)
+	_ = chromedp.Run(runCtx, chromedp.WaitReady("body", chromedp.ByQuery))
+	bm.updateTabInfo(runCtx)
 
 	var currentURL string
-	_ = chromedp.Run(tabCtx, chromedp.Location(&currentURL))
+	_ = chromedp.Run(runCtx, chromedp.Location(&currentURL))
 	return browserJSON("ok", true, "url", currentURL), nil
 }
 
@@ -962,15 +1136,17 @@ const extractTableJS = `(function(sel){
   return JSON.stringify({headers:headers,rows:rows,count:rows.length});
 })`
 
-func (bm *browserManager) actionExtractTable(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionExtractTable(reqCtx context.Context, p browserParams) (string, error) {
 	tabCtx, err := bm.getTabCtx(p.TargetID)
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	sel := p.Selector
 	if p.Ref != "" {
-		resolved, selErr := bm.refSelector(p.Ref)
+		resolved, selErr := bm.refSelector(p.TargetID, p.Ref)
 		if selErr != nil {
 			return "", selErr
 		}
@@ -985,7 +1161,7 @@ func (bm *browserManager) actionExtractTable(_ context.Context, p browserParams)
 	}
 
 	var resultJSON string
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &resultJSON)); err != nil {
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &resultJSON)); err != nil {
 		return "", fmt.Errorf("extract_table: %w", err)
 	}
 
@@ -994,7 +1170,7 @@ func (bm *browserManager) actionExtractTable(_ context.Context, p browserParams)
 
 // --- Resize viewport ---
 
-func (bm *browserManager) actionResize(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionResize(reqCtx context.Context, p browserParams) (string, error) {
 	if p.Width <= 0 || p.Height <= 0 {
 		return "", fmt.Errorf("width and height must be positive integers")
 	}
@@ -1003,8 +1179,10 @@ func (bm *browserManager) actionResize(_ context.Context, p browserParams) (stri
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return emulation.SetDeviceMetricsOverride(int64(p.Width), int64(p.Height), 1.0, false).Do(ctx)
 	})); err != nil {
 		return "", fmt.Errorf("resize: %w", err)
@@ -1015,7 +1193,7 @@ func (bm *browserManager) actionResize(_ context.Context, p browserParams) (stri
 
 // --- Highlight element ---
 
-func (bm *browserManager) actionHighlight(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionHighlight(reqCtx context.Context, p browserParams) (string, error) {
 	sel, err := bm.resolveSelector(p)
 	if err != nil {
 		return "", err
@@ -1025,6 +1203,8 @@ func (bm *browserManager) actionHighlight(_ context.Context, p browserParams) (s
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
 	js := fmt.Sprintf(`(function(){
 		document.querySelectorAll('.__agent_highlight').forEach(function(el){el.remove()});
@@ -1042,11 +1222,54 @@ func (bm *browserManager) actionHighlight(_ context.Context, p browserParams) (s
 	})()`, sel)
 
 	var result string
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(js, &result)); err != nil {
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &result)); err != nil {
 		return "", fmt.Errorf("highlight: %w", err)
 	}
 	if result != "ok" {
 		return "", fmt.Errorf("highlight: %s", result)
 	}
 	return browserJSON("ok", true, "highlighted", p.Ref), nil
+}
+
+// jsSetFormControlValue 用原生方式设置可编辑控件（应对部分网站上 SendKeys 长时间等焦点）。
+func jsSetFormControlValue(sel, text string) string {
+	data, _ := json.Marshal(text)
+	return fmt.Sprintf(`(function(){
+		var el = document.querySelector(%q);
+		if (!el) return "missing";
+		var t = %s;
+		try { el.focus(); } catch (e) {}
+		if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+			el.value = t;
+			el.dispatchEvent(new Event("input", { bubbles: true }));
+			el.dispatchEvent(new Event("change", { bubbles: true }));
+			return "ok";
+		}
+		if (el.isContentEditable) {
+			el.textContent = t;
+			try {
+				el.dispatchEvent(new InputEvent("input", { bubbles: true, data: t, inputType: "insertText" }));
+			} catch (e) {
+				el.dispatchEvent(new Event("input", { bubbles: true }));
+			}
+			return "ok";
+		}
+		return "not_editable";
+	})()`, sel, string(data))
+}
+
+// jsSyntheticPrimaryClick 在元素中心派发 mouse 序列（Click CDP 失败时的回退）。
+func jsSyntheticPrimaryClick(sel string) string {
+	return fmt.Sprintf(`(function(){
+		var el = document.querySelector(%q);
+		if (!el) return "missing";
+		var r = el.getBoundingClientRect();
+		if (r.width === 0 && r.height === 0) return "no_rect";
+		var x = r.left + Math.max(1, r.width / 2);
+		var y = r.top + Math.max(1, r.height / 2);
+		["mousedown","mouseup","click"].forEach(function(type){
+			el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 }));
+		});
+		return "ok";
+	})()`, sel)
 }

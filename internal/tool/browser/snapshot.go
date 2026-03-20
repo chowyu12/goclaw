@@ -78,7 +78,7 @@ const snapshotJS = `(function(){
   });
 })()`
 
-func (bm *browserManager) takeSnapshot(tabCtx context.Context, selector string) (string, error) {
+func (bm *browserManager) takeSnapshot(tabCtx context.Context, targetID, selector string) (string, error) {
 	js := snapshotJS
 	if selector != "" {
 		js = fmt.Sprintf(`(function(){
@@ -110,11 +110,20 @@ func (bm *browserManager) takeSnapshot(tabCtx context.Context, selector string) 
 		return "", fmt.Errorf("parse snapshot: %w", err)
 	}
 
-	bm.mu.Lock()
-	bm.refs = make(map[string]elementInfo, len(snapResult.Elements))
-	for _, el := range snapResult.Elements {
-		bm.refs[el.Ref] = el
+	tabID, err := bm.effectiveTabID(targetID)
+	if err != nil {
+		return "", err
 	}
+
+	bm.mu.Lock()
+	if bm.tabRefs == nil {
+		bm.tabRefs = make(map[string]map[string]elementInfo)
+	}
+	refMap := make(map[string]elementInfo, len(snapResult.Elements))
+	for _, el := range snapResult.Elements {
+		refMap[el.Ref] = el
+	}
+	bm.tabRefs[tabID] = refMap
 	bm.mu.Unlock()
 
 	return wrapUntrustedContent(formatSnapshot(snapResult)), nil

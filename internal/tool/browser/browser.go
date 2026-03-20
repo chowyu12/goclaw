@@ -105,7 +105,7 @@ type browserManager struct {
 	tabs        map[string]*tabInfo
 	tabOrder    []string // 按创建顺序记录 tabID，用于淘汰最旧 tab
 	activeTab   string
-	refs        map[string]elementInfo
+	tabRefs     map[string]map[string]elementInfo // tabID -> snapshot ref -> element
 	started     bool
 	remote      bool
 	tmpDir      string
@@ -122,8 +122,8 @@ type browserManager struct {
 }
 
 var defaultBrowser = &browserManager{
-	tabs: make(map[string]*tabInfo),
-	refs: make(map[string]elementInfo),
+	tabs:    make(map[string]*tabInfo),
+	tabRefs: make(map[string]map[string]elementInfo),
 }
 
 func SetVisible(v bool) {
@@ -231,7 +231,7 @@ func Handler(ctx context.Context, args string) (string, error) {
 	case "tabs":
 		result, err = bm.actionTabs()
 	case "open_tab":
-		result, err = bm.actionOpenTab(p)
+		result, err = bm.actionOpenTab(ctx, p)
 	case "close_tab":
 		result, err = bm.actionCloseTab(p)
 	case "console":
@@ -419,16 +419,26 @@ func (bm *browserManager) resetIdleTimer() {
 
 func (bm *browserManager) evictOldestTab() {
 	limit := bm.effectiveMaxTabs()
-	for len(bm.tabs) >= limit && len(bm.tabOrder) > 0 {
-		oldest := bm.tabOrder[0]
-		bm.tabOrder = bm.tabOrder[1:]
-		if oldest == bm.activeTab {
-			continue
+	for len(bm.tabs) >= limit {
+		var victim string
+		for _, id := range bm.tabOrder {
+			if id == bm.activeTab {
+				continue
+			}
+			if _, ok := bm.tabs[id]; ok {
+				victim = id
+				break
+			}
 		}
-		if tab, ok := bm.tabs[oldest]; ok {
+		if victim == "" {
+			return
+		}
+		bm.removeFromTabOrder(victim)
+		if tab, ok := bm.tabs[victim]; ok {
 			tab.cancel()
-			delete(bm.tabs, oldest)
-			log.WithField("tab", oldest).Info("[Browser] evicted oldest tab (tab limit reached)")
+			delete(bm.tabs, victim)
+			delete(bm.tabRefs, victim)
+			log.WithField("tab", victim).Info("[Browser] evicted oldest tab (tab limit reached)")
 		}
 	}
 }
@@ -439,7 +449,8 @@ func discoverBrowserWSURL(endpoint string) (string, error) {
 	}
 
 	endpoint = strings.TrimSuffix(endpoint, "/")
-	resp, err := http.Get(endpoint + "/json/version")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(endpoint + "/json/version")
 	if err != nil {
 		return "", fmt.Errorf("connect to %s: %w", endpoint, err)
 	}
@@ -483,7 +494,7 @@ func (bm *browserManager) closeBrowser() (string, error) {
 	wasRemote := bm.remote
 	bm.tabs = make(map[string]*tabInfo)
 	bm.tabOrder = nil
-	bm.refs = make(map[string]elementInfo)
+	bm.tabRefs = make(map[string]map[string]elementInfo)
 	bm.activeTab = ""
 	bm.started = false
 	bm.remote = false
@@ -513,11 +524,44 @@ func (bm *browserManager) getTabCtx(targetID string) (context.Context, error) {
 	return tab.ctx, nil
 }
 
-func (bm *browserManager) refSelector(ref string) (string, error) {
+// effectiveTabID 解析 target_id（空则 active），并校验 tab 存在。
+func (bm *browserManager) effectiveTabID(targetID string) (string, error) {
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
 
-	if _, ok := bm.refs[ref]; !ok {
+	id := targetID
+	if id == "" {
+		id = bm.activeTab
+	}
+	if id == "" {
+		return "", fmt.Errorf("no active tab")
+	}
+	if _, ok := bm.tabs[id]; !ok {
+		return "", fmt.Errorf("tab %q not found", id)
+	}
+	return id, nil
+}
+
+// refSelector 校验 ref 是否存在于指定 tab 最近一次 snapshot 中（targetID 空表示 active）。
+func (bm *browserManager) refSelector(targetID, ref string) (string, error) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+
+	id := targetID
+	if id == "" {
+		id = bm.activeTab
+	}
+	if id == "" {
+		return "", fmt.Errorf("no active tab")
+	}
+	if _, ok := bm.tabs[id]; !ok {
+		return "", fmt.Errorf("tab %q not found", id)
+	}
+	m := bm.tabRefs[id]
+	if m == nil {
+		return "", fmt.Errorf("ref %q not found on tab %q, run snapshot on this tab first", ref, id)
+	}
+	if _, ok := m[ref]; !ok {
 		return "", fmt.Errorf("ref %q not found, run snapshot action first", ref)
 	}
 	return fmt.Sprintf(`[data-agent-ref="%s"]`, ref), nil
@@ -525,7 +569,7 @@ func (bm *browserManager) refSelector(ref string) (string, error) {
 
 func (bm *browserManager) resolveSelector(p browserParams) (string, error) {
 	if p.Ref != "" {
-		return bm.refSelector(p.Ref)
+		return bm.refSelector(p.TargetID, p.Ref)
 	}
 	if p.Selector != "" {
 		return p.Selector, nil
@@ -533,14 +577,34 @@ func (bm *browserManager) resolveSelector(p browserParams) (string, error) {
 	return "", fmt.Errorf("ref or selector is required")
 }
 
+// refMeta 返回最近一次 snapshot 中该 ref 的元数据（无记录则 ok=false）。
+func (bm *browserManager) refMeta(targetID, ref string) (elementInfo, bool) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+
+	id := targetID
+	if id == "" {
+		id = bm.activeTab
+	}
+	if bm.tabRefs == nil {
+		return elementInfo{}, false
+	}
+	m := bm.tabRefs[id]
+	if m == nil {
+		return elementInfo{}, false
+	}
+	el, ok := m[ref]
+	return el, ok
+}
+
 func (bm *browserManager) tempFilePath(ext string) string {
 	return filepath.Join(bm.tmpDir, fmt.Sprintf("browser_%s%s", uuid.New().String()[:8], ext))
 }
 
-func (bm *browserManager) updateTabInfo(tabCtx context.Context) {
+func (bm *browserManager) updateTabInfo(runCtx context.Context) {
 	var currentURL, title string
-	_ = chromedp.Run(tabCtx, chromedp.Location(&currentURL))
-	_ = chromedp.Run(tabCtx, chromedp.Title(&title))
+	_ = chromedp.Run(runCtx, chromedp.Location(&currentURL))
+	_ = chromedp.Run(runCtx, chromedp.Title(&title))
 
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
@@ -579,10 +643,10 @@ func isURLSafe(rawURL string) error {
 	return nil
 }
 
-func fetchPageText(tabCtx context.Context, maxLen int) string {
+func fetchPageText(runCtx context.Context, maxLen int) string {
 	js := fmt.Sprintf(`(document.body&&document.body.innerText||'').substring(0,%d)`, maxLen)
 	var text string
-	_ = chromedp.Run(tabCtx, chromedp.Evaluate(js, &text))
+	_ = chromedp.Run(runCtx, chromedp.Evaluate(js, &text))
 	return strings.TrimSpace(text)
 }
 

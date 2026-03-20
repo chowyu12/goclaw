@@ -31,7 +31,7 @@ var deviceProfiles = map[string]deviceProfile{
 	"MacBook Pro 14": {Width: 1512, Height: 982, Scale: 2.0, Mobile: false, UserAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
 }
 
-func (bm *browserManager) actionSetDevice(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionSetDevice(reqCtx context.Context, p browserParams) (string, error) {
 	if p.Device == "" {
 		names := make([]string, 0, len(deviceProfiles))
 		for name := range deviceProfiles {
@@ -53,8 +53,10 @@ func (bm *browserManager) actionSetDevice(_ context.Context, p browserParams) (s
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		err := emulation.SetDeviceMetricsOverride(int64(profile.Width), int64(profile.Height), profile.Scale, profile.Mobile).Do(ctx)
 		if err != nil {
 			return err
@@ -67,7 +69,7 @@ func (bm *browserManager) actionSetDevice(_ context.Context, p browserParams) (s
 	return browserJSON("ok", true, "device", p.Device, "width", profile.Width, "height", profile.Height, "mobile", profile.Mobile), nil
 }
 
-func (bm *browserManager) actionSetMedia(_ context.Context, p browserParams) (string, error) {
+func (bm *browserManager) actionSetMedia(reqCtx context.Context, p browserParams) (string, error) {
 	scheme := p.ColorScheme
 	if scheme == "" {
 		scheme = "no-preference"
@@ -77,8 +79,10 @@ func (bm *browserManager) actionSetMedia(_ context.Context, p browserParams) (st
 	if err != nil {
 		return "", err
 	}
+	runCtx, runCancel := mergedActionContext(tabCtx, reqCtx)
+	defer runCancel()
 
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return emulation.SetEmulatedMedia().
 			WithFeatures([]*emulation.MediaFeature{
 				{Name: "prefers-color-scheme", Value: scheme},
