@@ -19,13 +19,13 @@ import (
 )
 
 var DefaultBaseURLs = map[model.ProviderType]string{
-	model.ProviderOpenAI:     "https://api.openai.com/v1",
-	model.ProviderQwen:       "https://dashscope.aliyuncs.com/compatible-mode/v1",
-	model.ProviderKimi:       "https://api.moonshot.cn/v1",
-	model.ProviderOpenRouter: "https://openrouter.ai/api/v1",
+	model.ProviderOpenAI:       "https://api.openai.com/v1",
+	model.ProviderQwen:         "https://dashscope.aliyuncs.com/compatible-mode/v1",
+	model.ProviderKimi:         "https://api.moonshot.cn/v1",
+	model.ProviderOpenRouter:   "https://openrouter.ai/api/v1",
 	model.ProviderOpenAICompat: "",
-	model.ProviderClaude:     "https://api.anthropic.com",
-	model.ProviderGemini:     "https://generativelanguage.googleapis.com",
+	model.ProviderClaude:       "https://api.anthropic.com",
+	model.ProviderGemini:       "https://generativelanguage.googleapis.com",
 }
 
 type adapter struct {
@@ -161,7 +161,7 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if len(logBody) > 50*1024 {
 			logBody = truncateBase64(logBody)
 		}
-		l.WithField("body", logBody).Info("[LLM-HTTP] >> request")
+		l.WithField("body", logBody).Trace("[LLM-HTTP] >> request")
 	}
 
 	resp, err := t.inner.RoundTrip(req)
