@@ -15,7 +15,7 @@
 借鉴 Cursor 的技能加载策略，采用**摘要注入 + 按需读取**的两阶段模式：
 
 - **阶段一**：仅将技能名称、描述和 `SKILL.md` 文件路径注入 System Prompt，不加载完整指令内容
-- **阶段二**：LLM 判断需要使用某项技能时，主动调用 `read_file` 工具读取 `SKILL.md` 获取详细指令
+- **阶段二**：LLM 判断需要使用某项技能时，主动调用 `read` 工具读取 `SKILL.md` 获取详细指令
 
 相比一次性注入所有技能内容，此方案在 Agent 挂载大量技能时可显著降低 System Prompt 长度，减少每次请求的基础 Token 消耗，同时保持技能的完整可用性。
 
@@ -53,11 +53,26 @@ Tool Search 模式将全量加载改为**懒加载**：
 
 ### 工具系统
 
-- 内置工具：获取当前时间、UUID 生成、计算器、Base64 编解码、JSON 格式化、文本哈希、随机数生成、脚本执行、代码解释器
-- HTTP 工具：天气查询、IP 查询、URL 内容读取
-- 浏览器自动化：33 种操作（导航、截图、快照、点击、输入、Cookie/Storage 管理、Console/Network 监控、设备仿真等）
-- 代码解释器：支持 Python/JavaScript/Shell，沙箱执行，适用于数据处理、数学计算、文件生成、格式转换等
-- 支持自定义 HTTP 工具和脚本工具
+14 个内置工具，覆盖文件操作、命令执行、网页交互和任务调度：
+
+| 工具 | 说明 |
+|------|------|
+| `read` | 读取文件内容，支持按行范围读取 |
+| `write` | 创建或覆盖文件，自动创建父目录 |
+| `edit` | 精确编辑文件（查找并替换） |
+| `grep` | 按正则表达式搜索文件内容 |
+| `find` | 按 glob 模式查找文件 |
+| `ls` | 列出目录内容 |
+| `exec` | 运行 Shell 命令，支持 PTY（适配需要 TTY 的命令行工具） |
+| `process` | 管理后台命令会话（启动、列出、读取输出、终止） |
+| `web_fetch` | 抓取 URL 并提取可读内容，自动回退浏览器渲染 |
+| `browser` | 浏览器自动化：33 种操作（导航、截图、快照、交互、监控、仿真等） |
+| `canvas` | 渲染 HTML/CSS/JS 画布，执行 JS 表达式，截取快照 |
+| `cron` | 管理定时任务与唤醒事件（提醒） |
+| `code_interpreter` | 代码解释器：Python/JavaScript/Shell 沙箱执行 |
+| `current_time` | 获取当前系统时间 |
+
+- 支持自定义 HTTP 工具和命令工具（通过 Web UI 或 API 创建）
 - MCP 协议客户端，支持接入 MCP 远程工具服务
 - 工具执行过程全链路追踪
 
@@ -68,7 +83,12 @@ Tool Search 模式将全量加载改为**懒加载**：
 - 技能可在 `manifest.json` 中声明工具定义（parameters），Agent 执行时自动注册为可调用工具
 - 支持可执行技能（`index.js` / `index.py`），通过子进程运行工具逻辑
 - 纯指令技能将 `SKILL.md` 内容注入 System Prompt，引导 LLM 按指令推理
-- 预置 7 个内置技能（定时任务、翻译助手、代码审查、文章摘要、写作助手、数据分析、SQL 助手），启动时自动生成到 `~/.goclaw/skills/`
+- 预置 5 个内置技能，每个都组合多个工具形成完整工作流：
+  - **深度研究** — `web_fetch` + `browser` + `write`，多源信息采集与研究报告生成
+  - **定时任务** — `cron` + `exec` + `write`，自然语言描述自动生成脚本并配置定时执行
+  - **系统运维** — `exec` + `process` + `read` + `grep`，系统健康检查、日志排错、进程管理
+  - **数据处理** — `code_interpreter` + `read` + `write`，CSV/JSON/Excel 数据清洗、转换、统计
+  - **网页采集** — `browser` + `web_fetch` + `code_interpreter` + `write`，结构化提取网页数据
 - 支持从 [ClawHub](https://clawhub.com) 一键安装技能（输入技能名称如 `himalaya` 即可下载）
 - 支持本地目录同步，手动放置技能目录后点击"同步"即可导入
 

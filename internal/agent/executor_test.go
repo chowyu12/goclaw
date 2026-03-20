@@ -42,8 +42,8 @@ func TestBuildSystemPrompt(t *testing.T) {
 	t.Run("with_tools", func(t *testing.T) {
 		ag := &model.Agent{}
 		tools := []model.Tool{
-			{Name: "current_time", Description: "获取当前时间", Enabled: true},
-			{Name: "calculator", Description: "数学计算", Enabled: true},
+			{Name: "read", Description: "读取文件内容", Enabled: true},
+			{Name: "exec", Description: "运行命令", Enabled: true},
 		}
 		result := buildSystemPrompt(ag, nil, tools, nil, false)
 		if !strings.Contains(result, "执行策略") {

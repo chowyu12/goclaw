@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/chowyu12/goclaw/internal/model"
@@ -13,28 +12,28 @@ func TestToolRegistry_BuildTrackedTools(t *testing.T) {
 	t.Run("builtin_tool", func(t *testing.T) {
 		tracker := NewStepTracker(newMockStore(), 1)
 		toolDefs := []model.Tool{
-			{Name: "current_time", Description: "get time", HandlerType: model.HandlerBuiltin, Enabled: true},
+			{Name: "ls", Description: "list dir", HandlerType: model.HandlerBuiltin, Enabled: true},
 		}
 		tools := registry.BuildTrackedTools(toolDefs, tracker, nil)
 		if len(tools) != 1 {
 			t.Fatalf("expected 1 tool, got %d", len(tools))
 		}
-		if tools[0].Name() != "current_time" {
-			t.Errorf("expected 'current_time', got %q", tools[0].Name())
+		if tools[0].Name() != "ls" {
+			t.Errorf("expected 'ls', got %q", tools[0].Name())
 		}
-		output, err := tools[0].Call(t.Context(), "{}")
+		output, err := tools[0].Call(t.Context(), `{"path":"."}`)
 		if err != nil {
 			t.Fatalf("tool call error: %v", err)
 		}
 		if output == "" {
-			t.Error("expected non-empty output from current_time")
+			t.Error("expected non-empty output from ls")
 		}
 	})
 
 	t.Run("disabled_tool_skipped", func(t *testing.T) {
 		tracker := NewStepTracker(newMockStore(), 1)
 		toolDefs := []model.Tool{
-			{Name: "current_time", HandlerType: model.HandlerBuiltin, Enabled: false},
+			{Name: "ls", HandlerType: model.HandlerBuiltin, Enabled: false},
 		}
 		tools := registry.BuildTrackedTools(toolDefs, tracker, nil)
 		if len(tools) != 0 {
@@ -57,13 +56,13 @@ func TestToolRegistry_BuildTrackedTools(t *testing.T) {
 		ms := newMockStore()
 		tracker := NewStepTracker(ms, 100)
 		toolDefs := []model.Tool{
-			{Name: "uuid_generator", Description: "gen uuid", HandlerType: model.HandlerBuiltin, Enabled: true},
+			{Name: "ls", Description: "list dir", HandlerType: model.HandlerBuiltin, Enabled: true},
 		}
 		tools := registry.BuildTrackedTools(toolDefs, tracker, nil)
 		if len(tools) != 1 {
 			t.Fatal("expected 1 tool")
 		}
-		_, err := tools[0].Call(t.Context(), "{}")
+		_, err := tools[0].Call(t.Context(), `{"path":"."}`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,58 +83,25 @@ func TestBuiltinHandlers(t *testing.T) {
 	registry := NewToolRegistry()
 	ctx := t.Context()
 
-	t.Run("base64_encode", func(t *testing.T) {
-		handler := registry.builtins["base64_encode"]
-		result, err := handler(ctx, `{"text":"hello"}`)
+	t.Run("ls_handler", func(t *testing.T) {
+		handler := registry.builtins["ls"]
+		result, err := handler(ctx, `{"path":"."}`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "aGVsbG8=" {
-			t.Errorf("expected 'aGVsbG8=', got %q", result)
+		if result == "" {
+			t.Error("expected non-empty output from ls")
 		}
 	})
 
-	t.Run("base64_decode", func(t *testing.T) {
-		handler := registry.builtins["base64_decode"]
-		result, err := handler(ctx, `{"text":"aGVsbG8="}`)
+	t.Run("grep_handler", func(t *testing.T) {
+		handler := registry.builtins["grep"]
+		result, err := handler(ctx, `{"pattern":"func.*Handler","path":".", "include":"*.go"}`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "hello" {
-			t.Errorf("expected 'hello', got %q", result)
-		}
-	})
-
-	t.Run("hash_text_sha256", func(t *testing.T) {
-		handler := registry.builtins["hash_text"]
-		result, err := handler(ctx, `{"text":"test","algorithm":"sha256"}`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(result) != 64 {
-			t.Errorf("expected 64 char sha256 hex, got len=%d", len(result))
-		}
-	})
-
-	t.Run("json_formatter", func(t *testing.T) {
-		handler := registry.builtins["json_formatter"]
-		result, err := handler(ctx, `{"json_string":"{\"a\":1}"}`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(result, "\"a\"") {
-			t.Errorf("expected formatted JSON, got %q", result)
-		}
-	})
-
-	t.Run("random_number", func(t *testing.T) {
-		handler := registry.builtins["random_number"]
-		result, err := handler(ctx, `{"min":1,"max":1}`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result != "1" {
-			t.Errorf("expected '1', got %q", result)
+		if result == "" {
+			t.Error("expected non-empty output from grep")
 		}
 	})
 }

@@ -170,7 +170,7 @@ func buildSystemPrompt(ag *model.Agent, skills []model.Skill, agentTools []model
 		strategies = append(strategies,
 			"**工具搜索**: 你的工具列表可能是精简版。当你需要使用某个工具但它不在列表中时，调用 tool_search 搜索关键词，系统会自动将匹配的工具加入可用列表",
 			"**搜索后调用**: tool_search 返回结果后，匹配的工具会在下一轮自动可用，直接调用即可",
-			"**技能依赖**: 如果技能指令中提到了特定工具名称（如 shell_exec、read_file 等），先检查该工具是否已在可用列表中，若不在则用 tool_search 搜索该工具名称",
+			"**技能依赖**: 如果技能指令中提到了特定工具名称（如 exec、read、grep 等），先检查该工具是否已在可用列表中，若不在则用 tool_search 搜索该工具名称",
 			"**多次搜索**: 如果第一次搜索未找到合适的工具，可以换关键词再次搜索",
 		)
 	} else if hasTools {
@@ -182,7 +182,7 @@ func buildSystemPrompt(ag *model.Agent, skills []model.Skill, agentTools []model
 		strategies = append(strategies, "**技能路由**: 若问题匹配某项技能，优先使用该技能及其关联工具")
 	}
 	if hasSkills {
-		strategies = append(strategies, "**技能详情**: 需要使用某项技能时，先用 read_file 读取其详细指令文件，了解完整用法后再执行。指令文件中的相对路径以 SKILL.md 所在目录为基准，例如 SKILL.md 路径为 /a/b/SKILL.md，引用 ./refs/doc.md 时应读取 /a/b/refs/doc.md")
+		strategies = append(strategies, "**技能详情**: 需要使用某项技能时，先用 read 工具读取其详细指令文件，了解完整用法后再执行。指令文件中的相对路径以 SKILL.md 所在目录为基准，例如 SKILL.md 路径为 /a/b/SKILL.md，引用 ./refs/doc.md 时应读取 /a/b/refs/doc.md")
 	}
 	if hasTools {
 		strategies = append(strategies,

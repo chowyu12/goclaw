@@ -9,38 +9,61 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/chowyu12/goclaw/internal/workspace"
 	"github.com/robfig/cron/v3"
 )
 
-type crontabArgs struct {
-	Action     string `json:"action"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
-	Expression string `json:"expression"`
-	Command    string `json:"command"`
-	Pattern    string `json:"pattern"`
-	LogOutput  bool   `json:"log_output"`
+type cronArgs struct {
+	Action      string `json:"action"`
+	Name        string `json:"name"`
+	Content     string `json:"content"`
+	Expression  string `json:"expression"`
+	Command     string `json:"command"`
+	Pattern     string `json:"pattern"`
+	LogOutput   bool   `json:"log_output"`
+	SystemEvent string `json:"system_event"`
+	Interval    string `json:"interval"`
+	EventID     string `json:"event_id"`
 }
 
+type wakeEvent struct {
+	ID          string    `json:"id"`
+	Expression  string    `json:"expression"`
+	SystemEvent string    `json:"system_event"`
+	Interval    string    `json:"interval"`
+	CreatedAt   time.Time `json:"created_at"`
+	NextFire    string    `json:"next_fire,omitempty"`
+}
+
+var (
+	events   []wakeEvent
+	eventsMu sync.RWMutex
+)
+
 func Handler(_ context.Context, args string) (string, error) {
-	var p crontabArgs
+	var p cronArgs
 	if err := json.Unmarshal([]byte(args), &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
 	switch p.Action {
-	case "save_script":
-		return saveScript(p)
-	case "add_job":
-		return addJob(p)
-	case "list_jobs":
+	case "schedule":
+		return schedule(p)
+	case "list":
 		return listJobs()
-	case "remove_job":
+	case "remove":
 		return removeJob(p)
+	case "add_event":
+		return addEvent(p)
+	case "list_events":
+		return listEvents()
+	case "remove_event":
+		return removeEvent(p)
 	default:
-		return "", fmt.Errorf("unknown action: %s, supported: save_script, add_job, list_jobs, remove_job", p.Action)
+		return "", fmt.Errorf("unknown action %q, supported: schedule, list, remove, add_event, list_events, remove_event", p.Action)
 	}
 }
 
@@ -60,6 +83,15 @@ func logDir() string {
 	return filepath.Join(home, ".goclaw", "cron", "logs")
 }
 
+func eventsFile() string {
+	cronDir := workspace.CronDir()
+	if cronDir == "" {
+		home, _ := os.UserHomeDir()
+		cronDir = filepath.Join(home, ".goclaw", "cron")
+	}
+	return filepath.Join(cronDir, "events.json")
+}
+
 func defaultPath() string {
 	if runtime.GOOS == "darwin" {
 		return "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -67,18 +99,35 @@ func defaultPath() string {
 	return "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
-func saveScript(p crontabArgs) (string, error) {
-	if p.Name == "" {
-		return "", fmt.Errorf("name is required for save_script")
+func schedule(p cronArgs) (string, error) {
+	if p.Expression == "" {
+		return "", fmt.Errorf("expression is required")
 	}
-	if p.Content == "" {
-		return "", fmt.Errorf("content is required for save_script")
+
+	if p.Content != "" {
+		return scheduleScript(p)
+	}
+	if p.Command != "" {
+		return addCronJob(p)
+	}
+	return "", fmt.Errorf("either command or content (script) is required")
+}
+
+func scheduleScript(p cronArgs) (string, error) {
+	if p.Name == "" {
+		return "", fmt.Errorf("name is required when providing script content")
+	}
+	if strings.HasPrefix(p.Expression, "@every") {
+		return "", fmt.Errorf("@every is not supported by system crontab; use a standard 5-field expression")
+	}
+
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+	if _, err := parser.Parse(p.Expression); err != nil {
+		return "", fmt.Errorf("invalid cron expression %q: %w", p.Expression, err)
 	}
 
 	dir := scriptDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create script dir: %w", err)
-	}
+	os.MkdirAll(dir, 0o755)
 
 	name := sanitizeName(p.Name)
 	if !strings.HasSuffix(name, ".sh") {
@@ -95,19 +144,17 @@ func saveScript(p crontabArgs) (string, error) {
 		return "", fmt.Errorf("write script: %w", err)
 	}
 
-	return fmt.Sprintf("Script saved: %s\n\n%s", filePath, content), nil
+	p.Command = filePath
+	result, err := addCronJob(p)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Script saved: %s\n%s", filePath, result), nil
 }
 
-func addJob(p crontabArgs) (string, error) {
-	if p.Expression == "" {
-		return "", fmt.Errorf("expression is required for add_job")
-	}
-	if p.Command == "" {
-		return "", fmt.Errorf("command is required for add_job")
-	}
-
+func addCronJob(p cronArgs) (string, error) {
 	if strings.HasPrefix(p.Expression, "@every") {
-		return "", fmt.Errorf("@every is not supported by system crontab; use a standard 5-field expression (e.g. '*/5 * * * *')")
+		return "", fmt.Errorf("@every is not supported by system crontab; use a standard 5-field expression")
 	}
 
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
@@ -117,13 +164,9 @@ func addJob(p crontabArgs) (string, error) {
 
 	command := p.Command
 	if p.LogOutput {
-		if err := os.MkdirAll(logDir(), 0o755); err != nil {
-			return "", fmt.Errorf("create log dir: %w", err)
-		}
+		os.MkdirAll(logDir(), 0o755)
 		logName := sanitizeName(filepath.Base(command))
-		if strings.HasSuffix(logName, ".sh") {
-			logName = strings.TrimSuffix(logName, ".sh")
-		}
+		logName = strings.TrimSuffix(logName, ".sh")
 		logFile := filepath.Join(logDir(), logName+".log")
 		command = fmt.Sprintf("%s >> %s 2>&1", command, logFile)
 	}
@@ -144,8 +187,109 @@ func addJob(p crontabArgs) (string, error) {
 	if err := installCrontab(newCrontab); err != nil {
 		return "", err
 	}
-
 	return fmt.Sprintf("Cron job added:\n  %s", entry), nil
+}
+
+func addEvent(p cronArgs) (string, error) {
+	if p.SystemEvent == "" {
+		return "", fmt.Errorf("system_event is required for add_event")
+	}
+	if p.Expression == "" && p.Interval == "" {
+		return "", fmt.Errorf("expression or interval is required for add_event")
+	}
+
+	expr := p.Expression
+	if expr == "" {
+		expr = "@every " + p.Interval
+	}
+
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+	sched, err := parser.Parse(expr)
+	if err != nil {
+		return "", fmt.Errorf("invalid expression %q: %w", expr, err)
+	}
+
+	nextFire := sched.Next(time.Now()).Format(time.RFC3339)
+
+	evt := wakeEvent{
+		ID:          fmt.Sprintf("evt_%d", time.Now().UnixMilli()),
+		Expression:  expr,
+		SystemEvent: p.SystemEvent,
+		Interval:    p.Interval,
+		CreatedAt:   time.Now(),
+		NextFire:    nextFire,
+	}
+
+	eventsMu.Lock()
+	loadEventsLocked()
+	events = append(events, evt)
+	saveEventsLocked()
+	eventsMu.Unlock()
+
+	return fmt.Sprintf("Wake event created:\n  ID: %s\n  Schedule: %s\n  Next fire: %s\n  Event: %s",
+		evt.ID, expr, nextFire, evt.SystemEvent), nil
+}
+
+func listEvents() (string, error) {
+	eventsMu.RLock()
+	loadEventsLocked()
+	list := make([]wakeEvent, len(events))
+	copy(list, events)
+	eventsMu.RUnlock()
+
+	if len(list) == 0 {
+		return "No wake events.", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Wake events (%d):\n", len(list)))
+	for _, e := range list {
+		sb.WriteString(fmt.Sprintf("  %s  schedule=%s  next=%s\n    event: %s\n",
+			e.ID, e.Expression, e.NextFire, e.SystemEvent))
+	}
+	return sb.String(), nil
+}
+
+func removeEvent(p cronArgs) (string, error) {
+	if p.EventID == "" {
+		return "", fmt.Errorf("event_id is required for remove_event")
+	}
+
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	loadEventsLocked()
+
+	found := false
+	filtered := events[:0]
+	for _, e := range events {
+		if e.ID == p.EventID {
+			found = true
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+
+	if !found {
+		return "", fmt.Errorf("event %q not found", p.EventID)
+	}
+
+	events = filtered
+	saveEventsLocked()
+	return fmt.Sprintf("Event %s removed.", p.EventID), nil
+}
+
+func loadEventsLocked() {
+	data, err := os.ReadFile(eventsFile())
+	if err != nil {
+		return
+	}
+	json.Unmarshal(data, &events)
+}
+
+func saveEventsLocked() {
+	data, _ := json.MarshalIndent(events, "", "  ")
+	os.MkdirAll(filepath.Dir(eventsFile()), 0o755)
+	os.WriteFile(eventsFile(), data, 0o644)
 }
 
 func ensureEnvHeader(existing string) string {
@@ -206,9 +350,9 @@ func listJobs() (string, error) {
 	return sb.String(), nil
 }
 
-func removeJob(p crontabArgs) (string, error) {
+func removeJob(p cronArgs) (string, error) {
 	if p.Pattern == "" {
-		return "", fmt.Errorf("pattern is required for remove_job")
+		return "", fmt.Errorf("pattern is required for remove")
 	}
 
 	existing, err := exec.Command("crontab", "-l").CombinedOutput()

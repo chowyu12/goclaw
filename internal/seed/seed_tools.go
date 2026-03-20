@@ -19,285 +19,218 @@ func defaultTools() []model.Tool {
 			}),
 		},
 		{
-			Name:        "calculator",
-			Description: "数学计算器，支持基本的数学表达式计算。输入一个数学表达式字符串。",
+			Name:        "read",
+			Description: "读取文件内容。支持全文读取或按行范围读取（通过 offset/limit 参数）。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "calculator",
-				"description": "Evaluate a mathematical expression",
+				"name":        "read",
+				"description": "Read file content. Supports full read or partial read by line range using offset/limit.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"expression": map[string]any{
+						"file_path": map[string]any{
 							"type":        "string",
-							"description": "The mathematical expression to evaluate, e.g. '2 + 3 * 4'",
+							"description": "Path to the file to read",
+						},
+						"offset": map[string]any{
+							"type":        "integer",
+							"description": "Starting line number (1-based). If set, returns lines with line numbers.",
+						},
+						"limit": map[string]any{
+							"type":        "integer",
+							"description": "Maximum number of lines to return (default 200 when offset is set)",
 						},
 					},
-					"required": []string{"expression"},
+					"required": []string{"file_path"},
 				},
 			}),
 		},
 		{
-			Name:        "uuid_generator",
-			Description: "生成一个随机的 UUID v4 字符串。无需输入参数。",
+			Name:        "write",
+			Description: "创建或覆盖文件。支持绝对路径、~ 开头路径和相对路径（解析到 Agent 沙箱目录）。可选追加模式。自动创建父目录。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "uuid_generator",
-				"description": "Generate a random UUID v4 string",
+				"name":        "write",
+				"description": "Create or overwrite a file. Supports absolute, home-relative (~/...), and relative paths. Creates parent directories automatically.",
 				"parameters": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": "File path to write",
+						},
+						"content": map[string]any{
+							"type":        "string",
+							"description": "Text content to write to the file",
+						},
+						"append": map[string]any{
+							"type":        "boolean",
+							"description": "If true, append to existing file instead of overwriting (default: false)",
+						},
+					},
+					"required": []string{"path", "content"},
 				},
 			}),
 		},
 		{
-			Name:        "base64_encode",
-			Description: "将输入文本进行 Base64 编码。",
+			Name:        "edit",
+			Description: "对文件进行精确编辑。查找 old_string 并替换为 new_string。old_string 在文件中必须唯一（不唯一时需提供更多上下文）。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "base64_encode",
-				"description": "Encode the input text to Base64",
+				"name":        "edit",
+				"description": "Make a precise edit to a file. Finds old_string and replaces it with new_string. old_string must match exactly one occurrence in the file.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"text": map[string]any{
+						"file_path": map[string]any{
 							"type":        "string",
-							"description": "The text to encode",
+							"description": "Path to the file to edit",
+						},
+						"old_string": map[string]any{
+							"type":        "string",
+							"description": "Exact text to find (must be unique in the file)",
+						},
+						"new_string": map[string]any{
+							"type":        "string",
+							"description": "Replacement text",
 						},
 					},
-					"required": []string{"text"},
+					"required": []string{"file_path", "old_string", "new_string"},
 				},
 			}),
 		},
 		{
-			Name:        "base64_decode",
-			Description: "将 Base64 编码的字符串解码为原始文本。",
-			HandlerType: model.HandlerBuiltin,
-			Enabled:     true,
-			FunctionDef: mustJSON(map[string]any{
-				"name":        "base64_decode",
-				"description": "Decode a Base64 encoded string",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"text": map[string]any{
-							"type":        "string",
-							"description": "The Base64 encoded text to decode",
-						},
-					},
-					"required": []string{"text"},
-				},
-			}),
-		},
-		{
-			Name:        "json_formatter",
-			Description: "将 JSON 字符串格式化为带缩进的可读格式，同时验证 JSON 是否合法。",
-			HandlerType: model.HandlerBuiltin,
-			Enabled:     true,
-			FunctionDef: mustJSON(map[string]any{
-				"name":        "json_formatter",
-				"description": "Format and validate a JSON string with indentation",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"json_string": map[string]any{
-							"type":        "string",
-							"description": "The JSON string to format",
-						},
-					},
-					"required": []string{"json_string"},
-				},
-			}),
-		},
-		{
-			Name:        "weather",
-			Description: "通过 HTTP 调用 wttr.in 获取指定城市的天气信息。输入城市名称（支持中英文）。",
-			HandlerType: model.HandlerHTTP,
-			Enabled:     true,
-			FunctionDef: mustJSON(map[string]any{
-				"name":        "weather",
-				"description": "Get weather information for a city using wttr.in",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"city": map[string]any{
-							"type":        "string",
-							"description": "City name, e.g. 'Beijing', 'Shanghai', 'London'",
-						},
-					},
-					"required": []string{"city"},
-				},
-			}),
-			HandlerConfig: mustJSON(model.HTTPHandlerConfig{
-				URL:    "https://wttr.in/{city}?format=j1",
-				Method: "GET",
-				Headers: map[string]string{
-					"Accept-Language": "zh-CN",
-				},
-			}),
-		},
-		{
-			Name:        "ip_lookup",
-			Description: "查询 IP 地址的地理位置信息。不传参数则返回本机公网 IP 信息。",
-			HandlerType: model.HandlerHTTP,
-			Enabled:     true,
-			FunctionDef: mustJSON(map[string]any{
-				"name":        "ip_lookup",
-				"description": "Look up geographic information for an IP address",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"ip": map[string]any{
-							"type":        "string",
-							"description": "IP address to look up (leave empty for your own IP)",
-						},
-					},
-				},
-			}),
-			HandlerConfig: mustJSON(model.HTTPHandlerConfig{
-				URL:    "http://ip-api.com/json/{ip}?lang=zh-CN",
-				Method: "GET",
-			}),
-		},
-		{
-			Name:        "url_reader",
-			Description: "读取指定 URL 的网页内容。优先通过 HTTP 直接获取，失败时自动回退到浏览器渲染提取文本。",
+			Name:        "grep",
+			Description: "按正则表达式模式搜索文件内容。支持目录递归搜索、文件过滤、大小写忽略。自动跳过 .git/node_modules 等目录。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
 			Timeout:     60,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "url_reader",
-				"description": "Read the text content of a URL. Automatically extracts text from webpages, supports both static and dynamically rendered pages.",
+				"name":        "grep",
+				"description": "Search file contents by regex pattern. Supports recursive directory search, file type filtering, and case-insensitive matching.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"url": map[string]any{
+						"pattern": map[string]any{
 							"type":        "string",
-							"description": "The URL to read",
+							"description": "Regular expression pattern to search for",
+						},
+						"path": map[string]any{
+							"type":        "string",
+							"description": "File or directory path to search in (default: current directory)",
+						},
+						"include": map[string]any{
+							"type":        "string",
+							"description": "File name glob filter, e.g. '*.go', '*.py'",
+						},
+						"ignore_case": map[string]any{
+							"type":        "boolean",
+							"description": "Case-insensitive search (default: false)",
 						},
 					},
-					"required": []string{"url"},
+					"required": []string{"pattern"},
 				},
 			}),
 		},
 		{
-			Name:        "hash_text",
-			Description: "对输入文本进行哈希计算，支持 MD5、SHA1、SHA256。",
+			Name:        "find",
+			Description: "按 glob 模式查找文件。支持 ** 递归匹配。自动跳过 .git/node_modules 等目录。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
+			Timeout:     60,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "hash_text",
-				"description": "Compute hash of the input text, supports md5, sha1, sha256",
+				"name":        "find",
+				"description": "Find files matching a glob pattern. Supports ** for recursive matching.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"text": map[string]any{
+						"pattern": map[string]any{
 							"type":        "string",
-							"description": "The text to hash",
+							"description": "Glob pattern to match files, e.g. '*.go', '**/*.test.js', 'Makefile'",
 						},
-						"algorithm": map[string]any{
+						"path": map[string]any{
 							"type":        "string",
-							"description": "Hash algorithm: md5, sha1, or sha256",
-							"enum":        []string{"md5", "sha1", "sha256"},
+							"description": "Root directory to search from (default: current directory)",
 						},
 					},
-					"required": []string{"text"},
+					"required": []string{"pattern"},
 				},
 			}),
 		},
 		{
-			Name:        "random_number",
-			Description: "生成指定范围内的随机整数。",
+			Name:        "ls",
+			Description: "列出目录内容。显示文件权限、大小、修改时间等信息。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "random_number",
-				"description": "Generate a random integer within a specified range",
+				"name":        "ls",
+				"description": "List directory contents with permissions, size, and modification time.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"min": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": "Directory path to list (default: current directory)",
+						},
+					},
+				},
+			}),
+		},
+		{
+			Name:        "exec",
+			Description: "运行 shell 命令。支持 PTY 以适配需要 TTY 的命令行工具（如 docker、kubectl 等），自动检测并使用 PTY。内置危险命令拦截。",
+			HandlerType: model.HandlerBuiltin,
+			Enabled:     true,
+			Timeout:     300,
+			FunctionDef: mustJSON(map[string]any{
+				"name":        "exec",
+				"description": "Execute a shell command with PTY support. Automatically allocates a pseudo-terminal for commands that require TTY. Built-in dangerous command blocking.",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"command": map[string]any{
+							"type":        "string",
+							"description": "Shell command to execute",
+						},
+						"timeout": map[string]any{
 							"type":        "integer",
-							"description": "Minimum value (inclusive), default 1",
+							"description": "Timeout in seconds (default: 30, max: 300)",
 						},
-						"max": map[string]any{
-							"type":        "integer",
-							"description": "Maximum value (inclusive), default 100",
+						"working_dir": map[string]any{
+							"type":        "string",
+							"description": "Working directory for command execution",
 						},
 					},
+					"required": []string{"command"},
 				},
 			}),
 		},
 		{
-			Name:        "cron_parser",
-			Description: "解析 Cron 表达式，验证合法性并计算接下来的执行时间。支持标准 5 字段、6 字段（含秒）及 @daily/@hourly/@every 等描述符。",
+			Name:        "process",
+			Description: "管理后台 exec 会话。支持启动后台命令、列出会话、读取输出、终止进程。适用于需要长时间运行的命令（如开发服务器、日志监控）。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "cron_parser",
-				"description": "Parse and validate a cron expression, show next scheduled execution times. Supports standard 5-field (minute hour dom month dow), 6-field with seconds, and descriptors like @daily, @hourly, @every 5m.",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"expression": map[string]any{
-							"type":        "string",
-							"description": "Cron expression, e.g. '*/5 * * * *', '0 9 * * 1-5', '@daily', '@every 30m'",
-						},
-						"count": map[string]any{
-							"type":        "integer",
-							"description": "Number of next execution times to show, default 5, max 20",
-						},
-						"timezone": map[string]any{
-							"type":        "string",
-							"description": "Timezone for display, e.g. 'Asia/Shanghai', 'UTC'. Default: server local timezone",
-						},
-					},
-					"required": []string{"expression"},
-				},
-			}),
-		},
-		{
-			Name:        "crontab",
-			Description: "定时任务管理工具。支持保存脚本、添加/查看/删除 crontab 定时任务。",
-			HandlerType: model.HandlerBuiltin,
-			Enabled:     true,
-			FunctionDef: mustJSON(map[string]any{
-				"name":        "crontab",
-				"description": "Manage cron jobs and shell scripts. Actions: save_script (create executable script), add_job (add crontab entry), list_jobs (show current crontab), remove_job (remove entry by pattern).",
+				"name":        "process",
+				"description": "Manage background exec sessions. Start long-running commands, list sessions, read output, or kill processes.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"action": map[string]any{
 							"type":        "string",
-							"enum":        []string{"save_script", "add_job", "list_jobs", "remove_job"},
-							"description": "save_script: create a shell script; add_job: add crontab entry; list_jobs: show current crontab; remove_job: remove matching entries",
+							"enum":        []string{"start", "list", "read", "kill"},
+							"description": "start: launch background command; list: show sessions; read: get output; kill: terminate session",
 						},
-						"name": map[string]any{
+						"session_id": map[string]any{
 							"type":        "string",
-							"description": "Script name (for save_script), e.g. 'backup_db', auto-appends .sh",
-						},
-						"content": map[string]any{
-							"type":        "string",
-							"description": "Shell script content (for save_script). Shebang added automatically if missing.",
-						},
-						"expression": map[string]any{
-							"type":        "string",
-							"description": "Cron expression (for add_job), e.g. '0 9 * * *', '*/5 * * * *'",
+							"description": "Session ID (required for read/kill)",
 						},
 						"command": map[string]any{
 							"type":        "string",
-							"description": "Command to schedule (for add_job), typically the script path from save_script",
-						},
-						"pattern": map[string]any{
-							"type":        "string",
-							"description": "Text pattern to match crontab entries for removal (for remove_job)",
-						},
-						"log_output": map[string]any{
-							"type":        "boolean",
-							"description": "Auto-redirect stdout/stderr to log file (for add_job), default false",
+							"description": "Shell command (required for start)",
 						},
 					},
 					"required": []string{"action"},
@@ -305,147 +238,133 @@ func defaultTools() []model.Tool {
 			}),
 		},
 		{
-			Name:        "shell_exec",
-			Description: "在本地服务器上执行 Shell 命令并返回输出结果。支持任意命令，超时 30 秒。",
-			HandlerType: model.HandlerCommand,
+			Name:        "web_fetch",
+			Description: "抓取 URL 并提取可读内容。优先通过 HTTP 直接获取，失败时自动回退到浏览器渲染提取文本。",
+			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
-			Timeout:     30,
+			Timeout:     60,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "shell_exec",
-				"description": "Execute a shell command on the local server and return the output",
+				"name":        "web_fetch",
+				"description": "Fetch a URL and extract readable content. Tries HTTP first, falls back to browser rendering for dynamic pages.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"command": map[string]any{
+						"url": map[string]any{
 							"type":        "string",
-							"description": "The shell command to execute, e.g., 'ls -la', 'date', 'whoami'",
+							"description": "URL to fetch",
 						},
 					},
-					"required": []string{"command"},
+					"required": []string{"url"},
 				},
-			}),
-			HandlerConfig: mustJSON(model.CommandHandlerConfig{
-				Command: "{command}",
-				Timeout: 30,
-			}),
-		},
-		{
-			Name:        "disk_usage",
-			Description: "查看服务器磁盘使用情况。",
-			HandlerType: model.HandlerCommand,
-			Enabled:     true,
-			FunctionDef: mustJSON(map[string]any{
-				"name":        "disk_usage",
-				"description": "Check disk usage of the server",
-				"parameters": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
-				},
-			}),
-			HandlerConfig: mustJSON(model.CommandHandlerConfig{
-				Command: "df -h",
-				Timeout: 10,
-			}),
-		},
-		{
-			Name:        "system_info",
-			Description: "获取服务器系统信息，包括主机名、系统版本、运行时间、负载等。",
-			HandlerType: model.HandlerCommand,
-			Enabled:     true,
-			FunctionDef: mustJSON(map[string]any{
-				"name":        "system_info",
-				"description": "Get server system information including hostname, OS version, uptime and load",
-				"parameters": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
-				},
-			}),
-			HandlerConfig: mustJSON(model.CommandHandlerConfig{
-				Command: "uname -a && uptime",
-				Timeout: 10,
-			}),
-		},
-		{
-			Name:        "list_files",
-			Description: "列出指定目录下的文件和目录。",
-			HandlerType: model.HandlerCommand,
-			Enabled:     true,
-			FunctionDef: mustJSON(map[string]any{
-				"name":        "list_files",
-				"description": "List files and directories in the specified path",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": "The directory path to list, e.g., '/tmp', '.'",
-						},
-					},
-					"required": []string{"path"},
-				},
-			}),
-			HandlerConfig: mustJSON(model.CommandHandlerConfig{
-				Command: "ls -lah {path}",
-				Timeout: 10,
 			}),
 		},
 		{
 			Name:        "browser",
-			Description: "浏览器控制工具，支持网页导航、截图、元素快照与交互、表单填充、Cookie/Storage管理、Console/Network监控、设备仿真等操作。先用 snapshot 获取页面元素引用，再通过 ref 执行点击、输入等操作。",
+			Description: "控制网页浏览器。支持导航、截图、元素快照与交互、表单填充、Cookie/Storage 管理、Console/Network 监控、设备仿真等操作。先用 snapshot 获取元素引用，再通过 ref 执行交互。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
 			Timeout:     120,
 			FunctionDef: mustJSON(browserToolDef()),
 		},
 		{
-			Name:        "read_file",
-			Description: "读取指定文件的内容。",
-			HandlerType: model.HandlerCommand,
+			Name:        "canvas",
+			Description: "展示/评估/快照 Canvas 画布。支持渲染 HTML/CSS/JS 内容、执行 JavaScript 表达式、截取画面快照。",
+			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
+			Timeout:     60,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "read_file",
-				"description": "Read the content of a file",
+				"name":        "canvas",
+				"description": "Display, evaluate, or snapshot a Canvas. Render HTML/CSS/JS, run JS expressions, and capture visual snapshots.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path": map[string]any{
+						"action": map[string]any{
 							"type":        "string",
-							"description": "The file path to read",
+							"enum":        []string{"show", "evaluate", "snapshot"},
+							"description": "show: render HTML to preview; evaluate: run JS expression on rendered page; snapshot: capture screenshot",
+						},
+						"html": map[string]any{
+							"type":        "string",
+							"description": "HTML content to render (required for all actions)",
+						},
+						"expression": map[string]any{
+							"type":        "string",
+							"description": "JavaScript expression to evaluate (required for evaluate action)",
+						},
+						"width": map[string]any{
+							"type":        "integer",
+							"description": "Viewport width for snapshot (default: 1280)",
+						},
+						"height": map[string]any{
+							"type":        "integer",
+							"description": "Viewport height for snapshot (default: 720)",
 						},
 					},
-					"required": []string{"path"},
+					"required": []string{"action", "html"},
 				},
-			}),
-			HandlerConfig: mustJSON(model.CommandHandlerConfig{
-				Command: "cat {path}",
-				Timeout: 10,
 			}),
 		},
 		{
-			Name:        "write_file",
-			Description: "将文本内容写入指定文件。支持绝对路径、~ 开头的路径和相对路径（相对于 Agent 沙箱目录）。可选追加模式。自动创建父目录。",
+			Name: "cron",
+			Description: "管理定时任务与唤醒事件。支持创建/列出/删除 cron 定时任务，以及设置提醒唤醒事件。" +
+				"设置提醒时，systemEvent 文本需符合提醒触发时的阅读场景，根据时间间隔标注提醒属性，必要时补充上下文。",
 			HandlerType: model.HandlerBuiltin,
 			Enabled:     true,
 			FunctionDef: mustJSON(map[string]any{
-				"name":        "write_file",
-				"description": "Write text content to a file. Supports absolute paths, ~/... paths, and relative paths (resolved to agent sandbox). Creates parent directories automatically.",
+				"name": "cron",
+				"description": "Manage cron jobs and wake events. " +
+					"schedule: create a cron job (optionally with inline script); " +
+					"list: show crontab entries; " +
+					"remove: delete entries by pattern; " +
+					"add_event: set a wake/reminder event with systemEvent text; " +
+					"list_events: show all wake events; " +
+					"remove_event: delete a wake event.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path": map[string]any{
+						"action": map[string]any{
 							"type":        "string",
-							"description": "File path to write. Absolute (/tmp/out.txt), home-relative (~/Desktop/out.txt), or relative (output.txt → sandbox dir)",
+							"enum":        []string{"schedule", "list", "remove", "add_event", "list_events", "remove_event"},
+							"description": "Action to perform",
+						},
+						"expression": map[string]any{
+							"type":        "string",
+							"description": "Cron expression, e.g. '0 9 * * *', '*/5 * * * *', '@daily'",
+						},
+						"command": map[string]any{
+							"type":        "string",
+							"description": "Command to schedule (for schedule action)",
+						},
+						"name": map[string]any{
+							"type":        "string",
+							"description": "Script name when providing inline content (for schedule)",
 						},
 						"content": map[string]any{
 							"type":        "string",
-							"description": "The text content to write to the file",
+							"description": "Shell script content (for schedule with inline script)",
 						},
-						"append": map[string]any{
+						"pattern": map[string]any{
+							"type":        "string",
+							"description": "Text pattern for matching crontab entries (for remove)",
+						},
+						"log_output": map[string]any{
 							"type":        "boolean",
-							"description": "If true, append to existing file instead of overwriting. Default: false",
+							"description": "Redirect stdout/stderr to log file (for schedule)",
+						},
+						"system_event": map[string]any{
+							"type":        "string",
+							"description": "Wake event text for reminders. Should read naturally at trigger time, include reminder context.",
+						},
+						"interval": map[string]any{
+							"type":        "string",
+							"description": "Interval for wake events, e.g. '30m', '2h', '1d' (alternative to expression for add_event)",
+						},
+						"event_id": map[string]any{
+							"type":        "string",
+							"description": "Event ID for remove_event",
 						},
 					},
-					"required": []string{"path", "content"},
+					"required": []string{"action"},
 				},
 			}),
 		},
@@ -461,7 +380,6 @@ func defaultTools() []model.Tool {
 				"name": "code_interpreter",
 				"description": "Execute code in a sandboxed environment. Supports Python, JavaScript, and Shell. " +
 					"Write code to solve problems like data processing, math computation, file generation, API testing, and format conversion. " +
-					"The code is saved to a sandbox directory and executed with the appropriate runtime. " +
 					"Returns stdout, stderr, exit code, and execution duration.",
 				"parameters": map[string]any{
 					"type": "object",
@@ -541,7 +459,7 @@ func browserToolDef() map[string]any {
 				"wait_text":     map[string]any{"type": "string", "description": "Wait for text to appear on page"},
 				"wait_selector": map[string]any{"type": "string", "description": "Wait for CSS selector to become visible"},
 				"wait_url":      map[string]any{"type": "string", "description": "Wait for URL to contain string"},
-				"wait_fn":       map[string]any{"type": "string", "description": "JS expression to poll until truthy (e.g. 'window.ready===true')"},
+				"wait_fn":       map[string]any{"type": "string", "description": "JS expression to poll until truthy"},
 				"wait_load":     map[string]any{"type": "string", "enum": []string{"networkidle", "domcontentloaded", "load"}, "description": "Wait for page load state"},
 				"accept":        map[string]any{"type": "boolean", "description": "Accept (true) or dismiss (false) dialog"},
 				"prompt_text":   map[string]any{"type": "string", "description": "Prompt dialog input text"},
@@ -550,18 +468,18 @@ func browserToolDef() map[string]any {
 				"level":         map[string]any{"type": "string", "enum": []string{"error", "warn", "info", "log"}, "description": "Console log level filter"},
 				"filter":        map[string]any{"type": "string", "description": "URL keyword filter for network requests"},
 				"clear":         map[string]any{"type": "boolean", "description": "Clear buffer after reading (console/network)"},
-				"operation":     map[string]any{"type": "string", "enum": []string{"get", "set", "clear"}, "description": "Operation for cookies/storage (default: get)"},
+				"operation":     map[string]any{"type": "string", "enum": []string{"get", "set", "clear"}, "description": "Operation for cookies/storage"},
 				"cookie_name":   map[string]any{"type": "string", "description": "Cookie name for set"},
 				"cookie_value":  map[string]any{"type": "string", "description": "Cookie value for set"},
 				"cookie_url":    map[string]any{"type": "string", "description": "Cookie URL scope for set"},
 				"cookie_domain": map[string]any{"type": "string", "description": "Cookie domain for set"},
-				"storage_type":  map[string]any{"type": "string", "enum": []string{"local", "session"}, "description": "Storage type (default: local)"},
+				"storage_type":  map[string]any{"type": "string", "enum": []string{"local", "session"}, "description": "Storage type"},
 				"key":           map[string]any{"type": "string", "description": "Storage key for get/set"},
 				"value":         map[string]any{"type": "string", "description": "Storage value for set"},
-				"key_name":      map[string]any{"type": "string", "description": "Key name for press (Enter/Tab/Escape/Backspace/ArrowUp/Down/Left/Right/Space/F1-F12 or single char)"},
+				"key_name":      map[string]any{"type": "string", "description": "Key name for press (Enter/Tab/Escape/etc)"},
 				"width":         map[string]any{"type": "integer", "description": "Viewport width for resize"},
 				"height":        map[string]any{"type": "integer", "description": "Viewport height for resize"},
-				"device":        map[string]any{"type": "string", "description": "Device name for set_device (e.g. 'iPhone 14', 'iPad', 'Pixel 7')"},
+				"device":        map[string]any{"type": "string", "description": "Device name for set_device"},
 				"color_scheme":  map[string]any{"type": "string", "enum": []string{"dark", "light", "no-preference"}, "description": "Color scheme for set_media"},
 			},
 			"required": []string{"action"},
