@@ -111,6 +111,8 @@ func buildSystemPrompt(ag *model.Agent, skills []model.Skill, agentTools []model
 	if ag.SystemPrompt != "" {
 		sb.WriteString(ag.SystemPrompt)
 		l.WithField("len", len(ag.SystemPrompt)).Debug("[Prompt]  base prompt loaded")
+	} else {
+		sb.WriteString("你是一个运行在 GoClaw 内部的个人助手。")
 	}
 
 	var enabledTools []model.Tool
