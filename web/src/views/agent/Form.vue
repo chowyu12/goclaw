@@ -412,7 +412,7 @@ const form = ref<any>({
   provider_id: null,
   model_name: "",
   temperature: 0.7,
-  max_tokens: 2048,
+  max_tokens: 4096,
   timeout: 0,
   max_history: 15,
   max_iterations: 30,

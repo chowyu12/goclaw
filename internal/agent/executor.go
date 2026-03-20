@@ -894,7 +894,7 @@ func (e *Executor) handleToolSearch(ctx context.Context, ec *execContext, tc ope
 		}
 	}
 
-	resultJSON := formatToolSearchResults(results, len(allDefs))
+	resultJSON := formatToolSearchResults(results, len(allDefs), newCount, len(discovered))
 	ec.l.WithFields(log.Fields{
 		"query":            args.Query,
 		"matches":          len(results),

@@ -22,17 +22,33 @@ type toolSearchResult struct {
 }
 
 func toolSearchDef() openai.Tool {
+	return toolSearchDefWithContext(0, 0, nil)
+}
+
+func toolSearchDefWithContext(totalTools int, discoveredCount int, discoveredNames []string) openai.Tool {
+	desc := "搜索可用工具。搜索一次即可，匹配的工具会自动加入可用列表，之后直接调用即可，无需重复搜索。"
+	if totalTools > 0 {
+		desc += fmt.Sprintf(" 当前共 %d 个工具", totalTools)
+		if discoveredCount > 0 {
+			desc += fmt.Sprintf("，你已发现 %d 个", discoveredCount)
+		}
+		desc += "。"
+	}
+	if len(discoveredNames) > 0 {
+		desc += " 已可用: " + strings.Join(discoveredNames, ", ") + "。如需其他工具再搜索。"
+	}
+
 	return openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        toolSearchName,
-			Description: "搜索可用工具。当你需要完成某项任务但不确定有哪些工具可用时，先调用此工具搜索。系统会将匹配的工具自动加入你的可用工具列表，随后你可以直接调用它们。",
+			Description: desc,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"query": map[string]any{
 						"type":        "string",
-						"description": "搜索关键词。工具名称通常为英文，建议优先使用英文关键词或工具名片段（如 shell、file、http），也支持中文功能描述搜索。",
+						"description": "搜索关键词（英文优先，如 read、exec、browser），也支持中文描述。一次搜索即可，无需反复搜索同一类工具。",
 					},
 				},
 				"required": []string{"query"},
@@ -159,16 +175,24 @@ func searchTools(query string, allDefs []openai.Tool) []toolSearchResult {
 	return out
 }
 
-func formatToolSearchResults(results []toolSearchResult, totalTools int) string {
+func formatToolSearchResults(results []toolSearchResult, totalTools int, newCount int, totalDiscovered int) string {
 	if len(results) == 0 {
-		return fmt.Sprintf("未找到匹配的工具。当前共有 %d 个工具可用，请尝试更宽泛的关键词重新搜索。", totalTools)
+		return fmt.Sprintf("未找到匹配的工具（共 %d 个工具）。尝试更宽泛的关键词，或直接使用已发现的 %d 个工具。", totalTools, totalDiscovered)
 	}
+	msg := fmt.Sprintf("找到 %d 个工具", len(results))
+	if newCount > 0 {
+		msg += fmt.Sprintf("（%d 个新发现）", newCount)
+	} else {
+		msg += "（均已在可用列表中）"
+	}
+	msg += fmt.Sprintf("，已发现 %d/%d 个工具。直接调用即可，无需再次搜索。", totalDiscovered, totalTools)
+
 	resp := struct {
 		FoundTools []toolSearchResult `json:"found_tools"`
 		Message    string             `json:"message"`
 	}{
 		FoundTools: results,
-		Message:    fmt.Sprintf("找到 %d 个相关工具，已自动加入可用工具列表，你现在可以直接调用它们。", len(results)),
+		Message:    msg,
 	}
 	data, _ := json.Marshal(resp)
 	return string(data)
@@ -184,10 +208,16 @@ func preloadSkillTools(toolSkillMap map[string]string, discovered map[string]boo
 }
 
 // buildToolSearchDefs creates the LLM-visible tool list for tool search mode:
-// always includes tool_search itself, plus any previously discovered tools.
+// always includes tool_search itself (with dynamic context), plus any previously discovered tools.
 func buildToolSearchDefs(allDefs []openai.Tool, discovered map[string]bool) []openai.Tool {
+	var discoveredNames []string
+	for name := range discovered {
+		discoveredNames = append(discoveredNames, name)
+	}
+	slices.Sort(discoveredNames)
+
 	result := make([]openai.Tool, 0, 1+len(discovered))
-	result = append(result, toolSearchDef())
+	result = append(result, toolSearchDefWithContext(len(allDefs), len(discovered), discoveredNames))
 	for _, def := range allDefs {
 		if def.Function != nil && discovered[def.Function.Name] {
 			result = append(result, def)
